@@ -29,7 +29,7 @@ from torch.nn import functional as F
 
 from transformers.activations import get_activation
 from transformers.configuration_utils import PretrainedConfig
-from transformers.file_utils import (
+from transformers.utils import (
     CONFIG_NAME,
     DUMMY_INPUTS,
     FLAX_WEIGHTS_NAME,
@@ -38,12 +38,14 @@ from transformers.file_utils import (
     WEIGHTS_NAME,
     ModelOutput,
     PushToHubMixin,
-    cached_path,
-    hf_bucket_url,
+    cached_file,
     is_offline_mode,
     is_remote_url,
     replace_return_docstrings,
 )
+# from transformers.utils.hub import hf_bucket_url
+from huggingface_hub import hf_hub_url
+
 from generation_utils import GenerationMixin
 from transformers.integrations import deepspeed_config, is_deepspeed_zero3_enabled
 from transformers.utils import logging
@@ -1070,7 +1072,6 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
                 cache_dir=cache_dir,
                 return_unused_kwargs=True,
                 force_download=force_download,
-                resume_download=resume_download,
                 proxies=proxies,
                 local_files_only=local_files_only,
                 use_auth_token=use_auth_token,
@@ -1121,21 +1122,20 @@ class PreTrainedModel(nn.Module, ModuleUtilsMixin, GenerationMixin, PushToHubMix
                 else:
                     filename = WEIGHTS_NAME
 
-                archive_file = hf_bucket_url(
+                archive_file = hf_hub_url(
                     pretrained_model_name_or_path,
                     filename=filename,
                     revision=revision,
-                    mirror=mirror,
                 )
 
             try:
                 # Load from URL or cache if already cached
-                resolved_archive_file = cached_path(
-                    archive_file,
+                resolved_archive_file = cached_file(
+                    pretrained_model_name_or_path,  # Replace archive_file with model_path or the correct model repo ID
+                    filename="pytorch_model.bin",  # Specify the correct filename
                     cache_dir=cache_dir,
                     force_download=force_download,
                     proxies=proxies,
-                    resume_download=resume_download,
                     local_files_only=local_files_only,
                     use_auth_token=use_auth_token,
                     user_agent=user_agent,
