@@ -1812,7 +1812,11 @@ class PageSum(BartPretrainedModel):
 
         self.encoder = BartEncoder(config, self.shared)
         self.decoder = BartDecoder(config, self.shared)
-
+        self.cross_layer = BartAttention(
+            embed_dim=config.d_model,
+            num_heads=config.encoder_attention_heads, 
+            dropout=config.attention_dropout
+        )
         self.init_weights()
 
     def get_input_embeddings(self):
@@ -1918,8 +1922,16 @@ class PageSum(BartPretrainedModel):
             last_hidden_state = decoder_outputs.last_hidden_state
             last_hidden_state = last_hidden_state.view(batch_size, seq_num, -1, last_hidden_state.size(-1))
 
+        hidden_state = last_hidden_state[:,0,:,:].requires_grad_(True)
+        for idx in range(seq_num-1):
+            hidden_state ,_ ,_ = self.cross_layer(
+                hidden_states = hidden_state,
+                key_value_states = last_hidden_state[:,idx+1,:,:].requires_grad_(True),
+            )
+        # print("j",hidden_state.shape)
+
         return Seq2SeqModelOutput(
-            last_hidden_state=last_hidden_state,
+            last_hidden_state=hidden_state,
             past_key_values=decoder_outputs.past_key_values,
             decoder_hidden_states=decoder_outputs.hidden_states,
             decoder_attentions=decoder_outputs.attentions,
@@ -2028,16 +2040,7 @@ class PageSumModel(BartPretrainedModel):
             return_dict=return_dict,
             seq_num=self.seq_num,
         )
-        lm_logits = outputs[0]  # [bz, seq_num, seq_len, dim]
-        lm_logits = lm_logits.transpose(1, 2)  # [bz, seq_len, seq_num, dim]
-        batch_size, seq_len, seq_num, dim = lm_logits.size()
-        lm_logits = lm_logits.reshape(-1, seq_num, dim) # [bz x seq_len, seq_num, dim]
-        s = self.lin(lm_logits)
-        s = torch.softmax(s, dim=1)
-        lm_logits = torch.matmul(lm_logits.transpose(1, 2), s).squeeze(-1) # [bz x seq_len, dim]
-        lm_logits = lm_logits.view(batch_size, seq_len, dim)
-
-
+        lm_logits = outputs[0]  # [bz, seq_len, dim]
         lm_logits = self.lm_head(lm_logits) + self.final_logits_bias
 
         masked_lm_loss = None
