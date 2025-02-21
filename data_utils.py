@@ -3,6 +3,8 @@ import os
 import json
 import torch
 from transformers import BartTokenizer
+from sklearn.cluster import KMeans  # Added import for standard clustering
+from sentence_transformers import SentenceTransformer
 
 
 def to_cuda(batch, gpuid):
@@ -28,9 +30,28 @@ class PageSumDataset(Dataset):
         self.tgt_max_len = tgt_max_len
         self.num_pages = num_pages
         self.page_type = page_type
+        self.sbert = SentenceTransformer('all-MiniLM-L6-v2')
 
     def __len__(self):
         return self.num
+    
+    def cluster_sentences(self, sentences):
+        """
+        Cluster sentences into self.num_pages clusters using the KMeans clustering algorithm from scikit-learn.
+        """
+        # Compute embeddings for all sentences.
+        embeddings = self.sbert.encode(sentences, convert_to_numpy=True)
+        
+        # Apply KMeans clustering.
+        kmeans = KMeans(n_clusters=self.num_pages, random_state=42)
+        labels = kmeans.fit_predict(embeddings)
+        
+        # Group sentence indices by cluster label.
+        clusters = [[] for _ in range(self.num_pages)]
+        for i, label in enumerate(labels):
+            clusters[label].append(i)
+            
+        return clusters
 
     def __getitem__(self, idx):
         if self.isdir:
@@ -40,32 +61,48 @@ class PageSumDataset(Dataset):
             with open(self.files[idx], "rb") as f:
                 data = json.load(f)
 
-        num = len(data["article"]) // self.num_pages
-        label = []
-        for i in range(self.num_pages):
-            label.extend([i] * num)
-        while len(label) < len(data["article"]):
-            label.append(self.num_pages - 1)
+        # num = len(data["article"]) // self.num_pages
+        # label = []
+        # for i in range(self.num_pages):
+        #     label.extend([i] * num)
+        # while len(label) < len(data["article"]):
+        #     label.append(self.num_pages - 1)
         
-        article = [[] for _ in range(self.num_pages)]
+        # article = [[] for _ in range(self.num_pages)]
         
-        if self.page_type == "multi_doc":
-            for i in range(min(len(data["article"]), self.num_pages)):
-                article[i].append(data["article"][i])
+        # if self.page_type == "multi_doc":
+        #     for i in range(min(len(data["article"]), self.num_pages)):
+        #         article[i].append(data["article"][i])
+        # else:
+        #     for (x, y) in zip(data["article"], label):
+        #         article[y].append(x)
+
+        # for i in range(self.num_pages):
+        #     if len(article[i]) == 0:
+        #         article[i].append(".")
+
+        # try:
+        #     article = [" ".join(x) for x in article]
+        # except:
+        #     article = ["." for _ in range(self.num_pages)]
+
+        sentences = data["article"]
+        # Cluster sentences using KMeans.
+        clusters = [[] for _ in range(self.num_pages)]
+        if len(sentences)>=self.num_pages:
+            clusters = self.cluster_sentences(sentences)
         else:
-            for (x, y) in zip(data["article"], label):
-                article[y].append(x)
-
-        for i in range(self.num_pages):
-            if len(article[i]) == 0:
-                article[i].append(".")
-
-        try:
-            article = [" ".join(x) for x in article]
-        except:
-            article = ["." for _ in range(self.num_pages)]
+            for i in range(len(sentences)):
+                clusters[i].append(i)
+        # print("sample index: ", idx)
+        pages = []
+        for cluster in clusters:
+            cluster_sorted = sorted(cluster)
+            # print(cluster_sorted)
+            page_text = " ".join([sentences[i] for i in cluster_sorted])
+            pages.append(page_text)
         
-        src = self.tok.batch_encode_plus(article, max_length=self.page_max_len, return_tensors="pt", padding="max_length", truncation=True)
+        src = self.tok.batch_encode_plus(pages, max_length=self.page_max_len, return_tensors="pt", padding="max_length", truncation=True)
         src_input_ids = src["input_ids"]
         abstract = data["abstract"]
         abstract = " ".join(abstract)
@@ -77,7 +114,7 @@ class PageSumDataset(Dataset):
             }
         if self.is_test:
             result["data"] = data
-            result["data"]["pages"] = article
+            result["data"]["pages"] = pages
         return result
 
 
