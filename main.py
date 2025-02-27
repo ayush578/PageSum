@@ -22,6 +22,7 @@ from modeling_bart_ours import PageSumModel
 from transformers import Adafactor
 from config import arxiv, arxiv_discourse, pubmed, govreport, multinews
 from datetime import datetime
+from rejection_loss import LabelSmoothedLossWithRejection
 
 
 logging.getLogger("transformers.tokenization_utils").setLevel(logging.ERROR)
@@ -353,7 +354,8 @@ def run(rank, args):
             dist.init_process_group("nccl", rank=rank, world_size=world_size)
             scorer = nn.parallel.DistributedDataParallel(scorer.to(gpuid), [gpuid], find_unused_parameters=False)
     scorer.train()
-    mle_fn = label_smoothing_loss(ignore_index=tok.pad_token_id, epsilon=args.smooth)
+    # mle_fn = label_smoothing_loss(ignore_index=tok.pad_token_id, epsilon=args.smooth)
+    rej_fn = LabelSmoothedLossWithRejection(args.rejection_alpha, ignore_idx=tok.pad_token_id, epsilon=args.smooth)
     init_lr = args.max_lr / args.warmup_steps
     if args.optim == "adafactor":
         s_optimizer = Adafactor(scorer.parameters(), scale_parameter=False, relative_step=False, warmup_init=False, lr=1e-3)
@@ -409,7 +411,8 @@ def run(rank, args):
             output = output[0]
             output = output[:, :-1]  # truncate last token
             gold = batch["tgt_input_ids"][:, 1:]  # shift right
-            loss = mle_fn(output.transpose(1, 2), gold)
+            # loss = mle_fn(output.transpose(1, 2), gold)
+            loss = rej_fn(gold, output)
             loss = loss / args.accumulate_step
             avg_loss += loss.item()
             avg_loss2 +=loss.item()

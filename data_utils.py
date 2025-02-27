@@ -3,13 +3,49 @@ import os
 import json
 import torch
 from transformers import BartTokenizer
-
+import spacy
+nlp = spacy.load("en_core_web_sm")
 
 def to_cuda(batch, gpuid):
     for n in batch:
         if n != "data":
             batch[n] = batch[n].to(gpuid)
 
+def preprocess_summary(document, summary):
+    """
+    Preprocess the summary so that tokens flagged as entities (using spaCy's NER)
+    that are not present in the document are replaced with '<unk>'.
+
+    Parameters:
+      document (str): The source document text.
+      summary (str): The summary text.
+
+    Returns:
+      str: The processed summary with undesired entity tokens replaced by '<unk>'.
+    """
+    # Process both document and summary using spaCy
+    doc_doc = nlp(document)
+    doc_summary = nlp(summary)
+    
+    # Create a set of allowed tokens from the document (using lowercase for case-insensitive matching)
+    allowed_tokens = set(token.text.lower() for token in doc_doc)
+    
+    processed_tokens = []
+    for token in doc_summary:
+        # Check if token is part of a named entity (ent_iob_ is not "O" means it's either the beginning or inside an entity)
+        if token.ent_iob_ != "O":
+            # If the entity token (in lowercase) is not in the document, replace it with <unk>
+            if token.text.lower() not in allowed_tokens:
+                processed_tokens.append("<unk>")
+            else:
+                processed_tokens.append(token.text)
+        else:
+            processed_tokens.append(token.text)
+    
+    # Reconstruct the processed summary while preserving the original whitespace
+    processed_summary = "".join([proc_tok + token.whitespace_ 
+                                 for proc_tok, token in zip(processed_tokens, doc_summary)])
+    return processed_summary
 
 class PageSumDataset(Dataset):
     def __init__(self, fdir, model_type, page_max_len=1024, tgt_max_len=256, num_pages=5, page_type=None, is_test=False):
@@ -67,8 +103,10 @@ class PageSumDataset(Dataset):
         
         src = self.tok.batch_encode_plus(article, max_length=self.page_max_len, return_tensors="pt", padding="max_length", truncation=True)
         src_input_ids = src["input_ids"]
+        text = " ".join(data["article"])
         abstract = data["abstract"]
         abstract = " ".join(abstract)
+        abstract = preprocess_summary(text,abstract)
         tgt = self.tok.batch_encode_plus([abstract], max_length=self.tgt_max_len, return_tensors="pt", padding="max_length", truncation=True)
         tgt_input_ids = tgt["input_ids"]
         result = {

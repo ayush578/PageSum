@@ -22,6 +22,7 @@ def arxiv(args):
     args.optim = getattr(args, "optim", "adam")  # optimizer
     args.page_type = getattr(args, "page_type", None)  # cluster type, (None or 'multi_doc')
     args.gradient_checkpointing = getattr(args, "gradient_checkpointing", False)  # gradient checkpointing
+    args.rejection_alpha = getattr(args, "alpha", 0.1)
 
 
 def arxiv_discourse(args):
