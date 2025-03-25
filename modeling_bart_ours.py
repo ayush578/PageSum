@@ -277,6 +277,9 @@ class BartEncoderLayer(nn.Module):
         self.fc1 = nn.Linear(self.embed_dim, config.encoder_ffn_dim)
         self.fc2 = nn.Linear(config.encoder_ffn_dim, self.embed_dim)
         self.final_layer_norm = nn.LayerNorm(self.embed_dim)
+    
+    def get_self_attn(self):
+        return self.self_attn
 
     def forward(
         self,
@@ -686,6 +689,9 @@ class BartEncoder(BartPretrainedModel):
         self.layernorm_embedding = nn.LayerNorm(embed_dim)
 
         self.init_weights()
+        
+    def get_layer(self):
+        return self.layers[0].get_self_attn()
 
     def forward(
         self,
@@ -1810,14 +1816,19 @@ class PageSum(BartPretrainedModel):
         padding_idx, vocab_size = config.pad_token_id, config.vocab_size
         self.shared = nn.Embedding(vocab_size, config.d_model, padding_idx)
 
-        self.encoder = BartEncoder(config, self.shared)
-        self.decoder = BartDecoder(config, self.shared)
+        self.encoder = BartEncoder(config, self.shared).to("cuda")
+        self.decoder = BartDecoder(config, self.shared).to("cuda")
         self.cross_layer = BartAttention(
             embed_dim=config.d_model,
             num_heads=config.encoder_attention_heads, 
             dropout=config.attention_dropout
         )
         self.init_weights()
+        for param in self.encoder.parameters():
+            param.requires_grad = False
+        for param in self.decoder.parameters():
+            param.requires_grad = False
+        self.cross_layer = self.encoder.get_layer()
 
     def get_input_embeddings(self):
         return self.shared
@@ -1956,12 +1967,17 @@ class PageSumModel(BartPretrainedModel):
         self.seq_num = 1
 
         self.init_weights()
+        for param in self.lm_head.parameters():
+            param.requires_grad = False
 
     def get_encoder(self):
         return self.model.get_encoder()
 
     def get_decoder(self):
         return self.model.get_decoder()
+
+    def get_config(self):
+        return self.config
 
     def set_seq_num(self, value):
         self.seq_num = value

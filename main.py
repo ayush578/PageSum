@@ -277,9 +277,11 @@ def test_sample(input_ids, input_mask, scorer, tok, batch):
     cnt=0
     rouge_score = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=True)
     rouge1, rouge2, rougeL = 0, 0, 0
+    eos_token_id = torch.tensor([scorer.get_config().eos_token_id], device="cuda")
     summaries = scorer.generate(
         input_ids=input_ids,
         attention_mask=input_mask,
+        eos_token_id = eos_token_id,
         max_length=args.gen_max_len + 2,  # +2 from original because we start at step=1 and stop before max_length
         min_length=args.gen_min_len + 1,  # +1 from original because we start at step=1
         no_repeat_ngram_size=3,
