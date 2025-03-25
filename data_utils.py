@@ -31,7 +31,7 @@ class PageSumDataset(Dataset):
         self.tgt_max_len = tgt_max_len
         self.num_pages = num_pages
         self.page_type = page_type
-        self.sbert = SentenceTransformer('/scratch/aayush.cse20.itbhu/mtp/PageSum/all-MiniLM-L6-v2')
+        self.sbert = SentenceTransformer('all-MiniLM-L6-v2')
 
     def __len__(self):
         return self.num
