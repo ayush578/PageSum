@@ -3,6 +3,9 @@ import os
 import json
 import torch
 from transformers import BartTokenizer
+from sklearn.cluster import KMeans  # Added import for standard clustering
+from sentence_transformers import SentenceTransformer
+import random
 
 
 def to_cuda(batch, gpuid):
@@ -28,9 +31,34 @@ class PageSumDataset(Dataset):
         self.tgt_max_len = tgt_max_len
         self.num_pages = num_pages
         self.page_type = page_type
+        self.sbert = SentenceTransformer('/scratch/aayush.cse20.itbhu/mtp/PageSum/all-MiniLM-L6-v2')
 
     def __len__(self):
         return self.num
+
+    def distribute_sentences(self, sentences):
+        """
+        Distribute sentences randomly across self.num_pages while maintaining order within each page.
+        """
+        num_sentences = len(sentences)
+        base_count = num_sentences // self.num_pages
+        extra = num_sentences % self.num_pages
+        
+        # Create a list of counts for each page ensuring equal distribution
+        counts = [base_count + (1 if i < extra else 0) for i in range(self.num_pages)]
+        
+        # Randomly distribute indices into pages while preserving order
+        indices = list(range(num_sentences))
+        random.shuffle(indices)  # Shuffle indices
+        
+        pages = []
+        start = 0
+        for count in counts:
+            page_indices = indices[start:start+count]  # Sort to maintain order
+            pages.append([sentences[i] for i in page_indices])
+            start += count
+        
+        return pages
 
     def __getitem__(self, idx):
         if self.isdir:
@@ -40,32 +68,11 @@ class PageSumDataset(Dataset):
             with open(self.files[idx], "rb") as f:
                 data = json.load(f)
 
-        num = len(data["article"]) // self.num_pages
-        label = []
-        for i in range(self.num_pages):
-            label.extend([i] * num)
-        while len(label) < len(data["article"]):
-            label.append(self.num_pages - 1)
+        sentences = data["article"]
+        pages = self.distribute_sentences(sentences)
+        pages = [" ".join(page) for page in pages]
         
-        article = [[] for _ in range(self.num_pages)]
-        
-        if self.page_type == "multi_doc":
-            for i in range(min(len(data["article"]), self.num_pages)):
-                article[i].append(data["article"][i])
-        else:
-            for (x, y) in zip(data["article"], label):
-                article[y].append(x)
-
-        for i in range(self.num_pages):
-            if len(article[i]) == 0:
-                article[i].append(".")
-
-        try:
-            article = [" ".join(x) for x in article]
-        except:
-            article = ["." for _ in range(self.num_pages)]
-        
-        src = self.tok.batch_encode_plus(article, max_length=self.page_max_len, return_tensors="pt", padding="max_length", truncation=True)
+        src = self.tok.batch_encode_plus(pages, max_length=self.page_max_len, return_tensors="pt", padding="max_length", truncation=True)
         src_input_ids = src["input_ids"]
         abstract = data["abstract"]
         abstract = " ".join(abstract)
@@ -77,7 +84,7 @@ class PageSumDataset(Dataset):
             }
         if self.is_test:
             result["data"] = data
-            result["data"]["pages"] = article
+            result["data"]["pages"] = pages
         return result
 
 
