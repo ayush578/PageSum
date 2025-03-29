@@ -411,8 +411,9 @@ def run(rank, args):
             output = output[0]
             output = output[:, :-1]  # truncate last token
             gold = batch["tgt_input_ids"][:, 1:]  # shift right
+            mask = batch["mask"][:, 1:]
             # loss = mle_fn(output.transpose(1, 2), gold)
-            loss = rej_fn(gold, output)
+            loss = rej_fn(gold, output, mask=mask)
             loss = loss / args.accumulate_step
             avg_loss += loss.item()
             avg_loss2 +=loss.item()

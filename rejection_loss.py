@@ -19,18 +19,12 @@ def label_smoothed_nll_loss_with_rejection(
     unk_idx=3
 ):
     lprobs = torch.log_softmax(lprobs, dim=-1)
-    # print("lprobs: ", lprobs.shape)
-    # print("target: ", target.shape)
     if target.dim() == lprobs.dim() - 1:
         target = target.unsqueeze(-1)
-    # print("target: ", target.shape)
     nll_loss = -lprobs.gather(dim=-1, index=target)
     smooth_loss = -lprobs.sum(dim=-1, keepdim=True)
-    # print("nll_loss: ",nll_loss.shape)
-    # print("smooth_loss: ",smooth_loss)
     # ================== calculate rejection loss ==================
     rej_prob = torch.exp(lprobs[:, :, unk_idx]).unsqueeze(-1)
-    # print("rej_prob: ",rej_prob.shape)
     if mask is not None:
         mask = mask.unsqueeze(-1).eq(0)
         keep_prob = (1. - rej_prob).masked_fill(mask, 1.0)  # 0: non-entity
@@ -38,13 +32,11 @@ def label_smoothed_nll_loss_with_rejection(
         keep_prob = 1. - rej_prob
     assert keep_prob.shape == nll_loss.shape, \
         "nll_loss: {}; keep_prob: {}".format(nll_loss.shape, keep_prob.shape)    
-    # print("keep_prob: ", keep_prob)
     rej_loss = keep_prob * (nll_loss + torch.log(keep_prob))
     rej_regularizer = -alpha * torch.log(keep_prob)
     nll_loss = rej_loss + rej_regularizer
 
     rej_smooth_loss = keep_prob * (smooth_loss + torch.log(keep_prob))
-    # print(rej_smooth_loss)
     smooth_loss = rej_smooth_loss + rej_regularizer
     # ===============================================================
 
@@ -55,14 +47,11 @@ def label_smoothed_nll_loss_with_rejection(
     else:
         nll_loss = nll_loss.squeeze(-1)
         smooth_loss = smooth_loss.squeeze(-1)
-    # print(nll_loss)
-    # print(smooth_loss)
     if reduce:
         nll_loss = nll_loss.sum()
         smooth_loss = smooth_loss.sum()
     eps_i = epsilon / (lprobs.size(-1) - 1)
     loss = (1.0 - epsilon - eps_i) * nll_loss + eps_i * smooth_loss
-    # print(loss,nll_loss,smooth_loss)
     return loss, nll_loss
 
 
@@ -74,7 +63,7 @@ class LabelSmoothedLossWithRejection(nn.Module):
         self.eps = epsilon
         self.padding_idx = ignore_idx
 
-    def forward(self, target, lprobs, reduce=True):
+    def forward(self, target, lprobs, reduce=True, mask = None):
         """Compute the loss for the given sample.
 
         Returns a tuple with three elements:
@@ -82,13 +71,12 @@ class LabelSmoothedLossWithRejection(nn.Module):
         2) the sample size, which is used as the denominator for the gradient
         3) logging outputs to display while training
         """
-        loss, nll_loss = self.compute_loss( target, lprobs, reduce=reduce)
+        loss, nll_loss = self.compute_loss( target, lprobs, reduce=reduce, mask=mask)
         return loss
 
-    def compute_loss(self, target, lprobs, reduce=True):
+    def compute_loss(self, target, lprobs, reduce=True, mask=None):
         # This mask marks all entities in the summary sequence. If the mask is not None,
         # rejection loss only applies to entity tokens.
-        mask = None
 
         loss, nll_loss = label_smoothed_nll_loss_with_rejection(
             lprobs,
