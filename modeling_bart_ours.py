@@ -1891,13 +1891,14 @@ class PageSum(BartPretrainedModel):
         encoder_hidden_states = encoder_outputs[0].view(batch_size * seq_num, -1, embed_dim)
         attention_mask = attention_mask.view(batch_size * seq_num, -1)
 
-        decoder_input_ids = torch.repeat_interleave(decoder_input_ids, seq_num, dim=0)
+        decoder_input_ids_repeat = torch.repeat_interleave(decoder_input_ids, seq_num, dim=0)
+        decoder_attention_mask_repeat = None
         if decoder_attention_mask is not None:
-            decoder_attention_mask = torch.repeat_interleave(decoder_attention_mask, seq_num, dim=0)
+            decoder_attention_mask_repeat = torch.repeat_interleave(decoder_attention_mask, seq_num, dim=0)
         # decoder outputs consists of (dec_features, past_key_value, dec_hidden, dec_attn)
         decoder_outputs = self.decoder(
-            input_ids=decoder_input_ids,
-            attention_mask=decoder_attention_mask,
+            input_ids=decoder_input_ids_repeat,
+            attention_mask=decoder_attention_mask_repeat,
             encoder_hidden_states=encoder_hidden_states,
             encoder_attention_mask=attention_mask,
             head_mask=decoder_head_mask,
@@ -1917,6 +1918,38 @@ class PageSum(BartPretrainedModel):
         else:
             last_hidden_state = decoder_outputs.last_hidden_state
             last_hidden_state = last_hidden_state.view(batch_size, seq_num, -1, last_hidden_state.size(-1))
+
+        # Calculate the number of tokens to select per page dynamically
+        batch_size, seq_num, seq_len, hidden_dim = last_hidden_state.size()
+        tokens_per_page = math.ceil(hidden_dim / seq_num)
+
+        # Take the first 128 tokens from each page and concatenate them
+        selected_tokens = last_hidden_state[:, :, :tokens_per_page, :].reshape(batch_size, -1, hidden_dim)
+
+        # Ensure the concatenated tokens have the desired shape (batch_size, 1024, hidden_dim)
+        selected_tokens = selected_tokens[:, :hidden_dim, :]
+
+        # Apply the decoder on the concatenated tokens
+        decoder_outputs = self.decoder(
+            input_ids=decoder_input_ids,
+            attention_mask=decoder_attention_mask,
+            encoder_hidden_states=selected_tokens,
+            encoder_attention_mask=None,
+            head_mask=decoder_head_mask,
+            cross_attn_head_mask=cross_attn_head_mask,
+            past_key_values=past_key_values,
+            inputs_embeds=decoder_inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+    
+        if not return_dict:
+            decoder_outputs[0] = decoder_outputs.view(batch_size, seq_num, -1, decoder_outputs[0].size(-1))
+            return decoder_outputs + encoder_outputs
+        else:
+            last_hidden_state = decoder_outputs.last_hidden_state
 
         return Seq2SeqModelOutput(
             last_hidden_state=last_hidden_state,
@@ -2028,14 +2061,15 @@ class PageSumModel(BartPretrainedModel):
             return_dict=return_dict,
             seq_num=self.seq_num,
         )
-        lm_logits = outputs[0]  # [bz, seq_num, seq_len, dim]
-        lm_logits = lm_logits.transpose(1, 2)  # [bz, seq_len, seq_num, dim]
-        batch_size, seq_len, seq_num, dim = lm_logits.size()
-        lm_logits = lm_logits.reshape(-1, seq_num, dim) # [bz x seq_len, seq_num, dim]
-        s = self.lin(lm_logits)
-        s = torch.softmax(s, dim=1)
-        lm_logits = torch.matmul(lm_logits.transpose(1, 2), s).squeeze(-1) # [bz x seq_len, dim]
-        lm_logits = lm_logits.view(batch_size, seq_len, dim)
+        lm_logits = outputs[0]  # [bz, seq_len, dim]
+        print(lm_logits.shape)
+        # lm_logits = lm_logits.transpose(1, 2)  # [bz, seq_len, seq_num, dim]
+        # batch_size, seq_len, seq_num, dim = lm_logits.size()
+        # lm_logits = lm_logits.reshape(-1, seq_num, dim) # [bz x seq_len, seq_num, dim]
+        # s = self.lin(lm_logits)
+        # s = torch.softmax(s, dim=1)
+        # lm_logits = torch.matmul(lm_logits.transpose(1, 2), s).squeeze(-1) # [bz x seq_len, dim]
+        # lm_logits = lm_logits.view(batch_size, seq_len, dim)
 
 
         lm_logits = self.lm_head(lm_logits) + self.final_logits_bias
