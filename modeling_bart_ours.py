@@ -1812,6 +1812,7 @@ class PageSum(BartPretrainedModel):
 
         self.encoder = BartEncoder(config, self.shared)
         self.decoder = BartDecoder(config, self.shared)
+        self.decoder2 = BartDecoder(config, self.shared)
 
         self.init_weights()
 
@@ -1930,29 +1931,24 @@ class PageSum(BartPretrainedModel):
         selected_tokens = selected_tokens[:, :hidden_dim, :]
 
         # Apply the decoder on the concatenated tokens
-        decoder_outputs = self.decoder(
+        decoder_outputs2 = self.decoder(
             input_ids=decoder_input_ids,
             attention_mask=decoder_attention_mask,
             encoder_hidden_states=selected_tokens,
             encoder_attention_mask=None,
             head_mask=decoder_head_mask,
             cross_attn_head_mask=cross_attn_head_mask,
-            past_key_values=past_key_values,
+            past_key_values=None,
             inputs_embeds=decoder_inputs_embeds,
             use_cache=use_cache,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
         )
-    
-        if not return_dict:
-            decoder_outputs[0] = decoder_outputs.view(batch_size, seq_num, -1, decoder_outputs[0].size(-1))
-            return decoder_outputs + encoder_outputs
-        else:
-            last_hidden_state = decoder_outputs.last_hidden_state
+        last_hidden_state2 = decoder_outputs2.last_hidden_state
 
         return Seq2SeqModelOutput(
-            last_hidden_state=last_hidden_state,
+            last_hidden_state=last_hidden_state2,
             past_key_values=decoder_outputs.past_key_values,
             decoder_hidden_states=decoder_outputs.hidden_states,
             decoder_attentions=decoder_outputs.attentions,
@@ -2194,12 +2190,15 @@ class PageSumModel(BartPretrainedModel):
         return shift_tokens_right(labels, self.config.pad_token_id, self.config.decoder_start_token_id)
 
     def _reorder_cache(self, past, beam_idx):
+        print("past", len(past[0][0]),len(past[0][1]))
+        print("beam_idx", beam_idx)
         reordered_past = ()
         beam_idx = beam_idx * self.seq_num
         beam_idx = torch.repeat_interleave(beam_idx.unsqueeze(1), self.seq_num, dim=1)
         for i in range(self.seq_num):
             beam_idx[:, i] = beam_idx[:, i] + i
         beam_idx = beam_idx.view(-1)
+        print("beam_idx", beam_idx)
         for layer_past in past:
             # cached cross_attention states don't have to be reordered -> they are always the same
             reordered_past += (
