@@ -3,6 +3,7 @@ import os
 import json
 import torch
 from transformers import BartTokenizer
+import re 
 
 
 def to_cuda(batch, gpuid):
@@ -10,6 +11,15 @@ def to_cuda(batch, gpuid):
         if n != "data":
             batch[n] = batch[n].to(gpuid)
 
+##clean text
+def clean_text(text):
+    text = re.sub(r'(?:@\w+)|(?:\\\w+)', '', text)
+    text = re.sub(r'\[.*?\]', '', text)
+    text = re.sub(r'doi:\S+', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'arxiv:\S+', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\*', '', text)
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
 
 class PageSumDataset(Dataset):
     def __init__(self, fdir, model_type, page_max_len=1024, tgt_max_len=256, num_pages=5, page_type=None, is_test=False):
@@ -62,6 +72,8 @@ class PageSumDataset(Dataset):
 
         try:
             article = [" ".join(x) for x in article]
+            ## clean text
+            article = [clean_text(page) for page in article]
         except:
             article = ["." for _ in range(self.num_pages)]
         
