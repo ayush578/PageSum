@@ -502,7 +502,8 @@ class GenerationMixin:
     ) -> Dict[str, Any]:
         # update past
         if "past_key_values" in outputs:
-            model_kwargs["past"] = outputs.past_key_values
+            model_kwargs["past"] = outputs.past_key_values[0]
+            model_kwargs["past2"] = outputs.past_key_values[1]
         elif "mems" in outputs:
             model_kwargs["past"] = outputs.mems
         elif "past_buckets_states" in outputs:
@@ -1850,7 +1851,7 @@ class GenerationMixin:
                 outputs, model_kwargs, is_encoder_decoder=self.config.is_encoder_decoder
             )
             if model_kwargs["past"] is not None:
-                model_kwargs["past"] = self._reorder_cache(model_kwargs["past"], beam_idx)
+                model_kwargs["past"], model_kwargs["past2"] = self._reorder_cache(model_kwargs["past"], model_kwargs["past2"] ,beam_idx)
 
             # increase cur_len
             cur_len = cur_len + 1
@@ -2152,7 +2153,7 @@ class GenerationMixin:
                 outputs, model_kwargs, is_encoder_decoder=self.config.is_encoder_decoder
             )
             if model_kwargs["past"] is not None:
-                model_kwargs["past"] = self._reorder_cache(model_kwargs["past"], beam_idx)
+                model_kwargs["past"], model_kwargs["past2"] = self._reorder_cache(model_kwargs["past"], model_kwargs["past2"] ,beam_idx)
 
             # increase cur_len
             cur_len = cur_len + 1
@@ -2492,7 +2493,7 @@ class GenerationMixin:
                 outputs, model_kwargs, is_encoder_decoder=self.config.is_encoder_decoder
             )
             if model_kwargs["past"] is not None:
-                model_kwargs["past"] = self._reorder_cache(model_kwargs["past"], reordering_indices)
+                model_kwargs["past"], model_kwargs["past2"] = self._reorder_cache(model_kwargs["past"], model_kwargs["past2"] ,beam_idx)
 
             # increase cur_len
             cur_len = cur_len + 1

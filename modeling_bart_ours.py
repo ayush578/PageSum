@@ -1841,6 +1841,7 @@ class PageSum(BartPretrainedModel):
         cross_attn_head_mask=None,
         encoder_outputs=None,
         past_key_values=None,
+        past_key_values2=None,
         inputs_embeds=None,
         decoder_inputs_embeds=None,
         use_cache=None,
@@ -1938,7 +1939,7 @@ class PageSum(BartPretrainedModel):
             encoder_attention_mask=None,
             head_mask=decoder_head_mask,
             cross_attn_head_mask=cross_attn_head_mask,
-            past_key_values=None,
+            past_key_values=past_key_values2,
             inputs_embeds=decoder_inputs_embeds,
             use_cache=use_cache,
             output_attentions=output_attentions,
@@ -1949,7 +1950,7 @@ class PageSum(BartPretrainedModel):
 
         return Seq2SeqModelOutput(
             last_hidden_state=last_hidden_state2,
-            past_key_values=decoder_outputs.past_key_values,
+            past_key_values=[decoder_outputs.past_key_values,decoder_outputs2.past_key_values],
             decoder_hidden_states=decoder_outputs.hidden_states,
             decoder_attentions=decoder_outputs.attentions,
             cross_attentions=decoder_outputs.cross_attentions,
@@ -2014,6 +2015,7 @@ class PageSumModel(BartPretrainedModel):
         cross_attn_head_mask=None,
         encoder_outputs=None,
         past_key_values=None,
+        past_key_values2=None,
         inputs_embeds=None,
         decoder_inputs_embeds=None,
         labels=None,
@@ -2049,6 +2051,7 @@ class PageSumModel(BartPretrainedModel):
             decoder_head_mask=decoder_head_mask,
             cross_attn_head_mask=cross_attn_head_mask,
             past_key_values=past_key_values,
+            past_key_values2=past_key_values2,
             inputs_embeds=inputs_embeds,
             decoder_inputs_embeds=decoder_inputs_embeds,
             use_cache=use_cache,
@@ -2058,7 +2061,6 @@ class PageSumModel(BartPretrainedModel):
             seq_num=self.seq_num,
         )
         lm_logits = outputs[0]  # [bz, seq_len, dim]
-        print(lm_logits.shape)
         # lm_logits = lm_logits.transpose(1, 2)  # [bz, seq_len, seq_num, dim]
         # batch_size, seq_len, seq_num, dim = lm_logits.size()
         # lm_logits = lm_logits.reshape(-1, seq_num, dim) # [bz x seq_len, seq_num, dim]
@@ -2189,19 +2191,23 @@ class PageSumModel(BartPretrainedModel):
     def prepare_decoder_input_ids_from_labels(self, labels: torch.Tensor):
         return shift_tokens_right(labels, self.config.pad_token_id, self.config.decoder_start_token_id)
 
-    def _reorder_cache(self, past, beam_idx):
-        print("past", len(past[0][0]),len(past[0][1]))
-        print("beam_idx", beam_idx)
+    def _reorder_cache(self, past, past2, beam_idx):
+        print("past",len(past), len(past[0]),len(past[0][0]))
         reordered_past = ()
+        reordered_past2 = ()
+        beam_idx2 = beam_idx.clone()
         beam_idx = beam_idx * self.seq_num
         beam_idx = torch.repeat_interleave(beam_idx.unsqueeze(1), self.seq_num, dim=1)
         for i in range(self.seq_num):
             beam_idx[:, i] = beam_idx[:, i] + i
         beam_idx = beam_idx.view(-1)
-        print("beam_idx", beam_idx)
         for layer_past in past:
             # cached cross_attention states don't have to be reordered -> they are always the same
             reordered_past += (
                 tuple(past_state.index_select(0, beam_idx) for past_state in layer_past[:2]) + layer_past[2:],
             )
-        return reordered_past
+        for layer_past in past2:
+            reordered_past2 += (
+                tuple(past_state.index_select(0, beam_idx2) for past_state in layer_past[:2]) + layer_past[2:],
+            )
+        return reordered_past, reordered_past2
