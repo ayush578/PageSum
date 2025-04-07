@@ -395,9 +395,10 @@ def run(rank, args):
                 to_cuda(batch, gpuid)
             step_cnt += 1
             input_ids = batch["src_input_ids"]
-            input_ids = input_ids.view(input_ids.size(0), -1)
-            input_mask = input_ids != tok.pad_token_id
             decoder_input_ids = batch["tgt_input_ids"]
+            input_ids = input_ids.view(input_ids.size(0), -1)
+            decoder_input_ids = decoder_input_ids.view(decoder_input_ids.size(0), -1)
+            input_mask = input_ids != tok.pad_token_id
             decoder_attention_mask = decoder_input_ids != tok.pad_token_id
             output = scorer(
                 input_ids=input_ids, 
@@ -408,7 +409,7 @@ def run(rank, args):
                 )
             output = output[0]
             output = output[:, :-1]  # truncate last token
-            gold = batch["tgt_input_ids"][:, 1:]  # shift right
+            gold = batch["nett_tgt_input_ids"][:, 1:]  # shift right
             loss = mle_fn(output.transpose(1, 2), gold)
             loss = loss / args.accumulate_step
             avg_loss += loss.item()

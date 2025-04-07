@@ -2,8 +2,8 @@ from torch.utils.data import Dataset
 import os
 import json
 import torch
-from transformers import BartTokenizer
-
+from transformers import BartForConditionalGeneration, BartTokenizer
+from rouge_score import rouge_scorer
 
 def to_cuda(batch, gpuid):
     for n in batch:
@@ -23,6 +23,7 @@ class PageSumDataset(Dataset):
                 self.files = [x.strip() for x in f]
             self.num = len(self.files)
         self.tok = BartTokenizer.from_pretrained(model_type, verbose=False)
+        self.bart_model = BartForConditionalGeneration.from_pretrained(model_type)
         self.page_max_len = page_max_len
         self.is_test = is_test
         self.tgt_max_len = tgt_max_len
@@ -65,15 +66,74 @@ class PageSumDataset(Dataset):
         except:
             article = ["." for _ in range(self.num_pages)]
         
-        src = self.tok.batch_encode_plus(article, max_length=self.page_max_len, return_tensors="pt", padding="max_length", truncation=True)
+        # Encode the article pages as source inputs
+        src = self.tok.batch_encode_plus(
+            article,
+            max_length=self.page_max_len,
+            return_tensors="pt",
+            padding="max_length",
+            truncation=True
+        )
         src_input_ids = src["input_ids"]
+
+        # ----- Generate page-level summaries using BART -----
+        # Here we assume self.bart_model and self.bart_tokenizer are already defined.
+        page_summaries = []
+        for page in article:
+            # Tokenize the page text using the BART tokenizer
+            inputs = self.tok(page, return_tensors="pt", truncation=True, max_length=1024)
+            input_ids = inputs["input_ids"]
+            attention_mask = inputs["attention_mask"]
+            summary_ids = self.bart_model.generate(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                early_stopping=True
+            )
+            page_summary = self.tok.decode(summary_ids[0], skip_special_tokens=True)
+            page_summaries.append(page_summary)
+
+        # ----- Divide the abstract into pages using the provided sentence list -----
+        # Since data["abstract"] is already a list of sentences, we use it directly.
+        abstract_sentences = data["abstract"]
+
+        # Use the rouge_score package to compare sentences with each page summary.
+        scorer = rouge_scorer.RougeScorer(['rougeL'], use_stemmer=True)
+        page_assignment = {i: [] for i in range(self.num_pages)}
+        for sent in abstract_sentences:
+            best_page = None
+            best_score = -1
+            for i, ps in enumerate(page_summaries):
+                score = scorer.score(sent, ps)['rougeL'].fmeasure
+                if score > best_score:
+                    best_score = score
+                    best_page = i
+            page_assignment[best_page].append(sent)
+
+        # Build target summaries for each page; if no sentences assigned, use a fallback.
+        page_targets = []
+        for i in range(self.num_pages):
+            if page_assignment[i]:
+                page_targets.append(" ".join(page_assignment[i]))
+            else:
+                page_targets.append(".")
+
+        # Encode the page-level summaries as target inputs.
+        tgt = self.tok.batch_encode_plus(
+            page_targets,
+            max_length=self.tgt_max_len,
+            return_tensors="pt",
+            padding="max_length",
+            truncation=True
+        )
+        tgt_input_ids = tgt["input_ids"]
         abstract = data["abstract"]
         abstract = " ".join(abstract)
         tgt = self.tok.batch_encode_plus([abstract], max_length=self.tgt_max_len, return_tensors="pt", padding="max_length", truncation=True)
-        tgt_input_ids = tgt["input_ids"]
+        nett_tgt_input_ids = tgt["input_ids"]
         result = {
             "src_input_ids": src_input_ids, 
             "tgt_input_ids": tgt_input_ids,
+            "nett_tgt_input_ids": nett_tgt_input_ids,
             }
         if self.is_test:
             result["data"] = data
@@ -90,12 +150,14 @@ def collate_mp(batch, pad_token_id, is_test=False):
         return result
 
     src_input_ids = mat_pad([x["src_input_ids"] for x in batch])
-    tgt_input_ids = torch.cat([x["tgt_input_ids"] for x in batch])
+    tgt_input_ids = mat_pad([x["tgt_input_ids"] for x in batch])
+    nett_tgt_input_ids = torch.cat([x["nett_tgt_input_ids"] for x in batch])
     if is_test:
         data = [x["data"] for x in batch]
     result = {
         "src_input_ids": src_input_ids,
         "tgt_input_ids": tgt_input_ids,
+        "nett_tgt_input_ids": nett_tgt_input_ids,
         }
     if is_test:
         result["data"] = data

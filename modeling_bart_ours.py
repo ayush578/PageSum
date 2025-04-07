@@ -1890,11 +1890,14 @@ class PageSum(BartPretrainedModel):
         embed_dim = encoder_outputs[0].size(-1)
         encoder_hidden_states = encoder_outputs[0].view(batch_size * seq_num, -1, embed_dim)
         attention_mask = attention_mask.view(batch_size * seq_num, -1)
-
-        decoder_input_ids = torch.repeat_interleave(decoder_input_ids, seq_num, dim=0)
-        if decoder_attention_mask is not None:
-            decoder_attention_mask = torch.repeat_interleave(decoder_attention_mask, seq_num, dim=0)
-        # decoder outputs consists of (dec_features, past_key_value, dec_hidden, dec_attn)
+        if decoder_input_ids.size(1) % seq_num == 0:
+            decoder_input_ids = decoder_input_ids.view(batch_size * seq_num, -1)
+            decoder_attention_mask = decoder_attention_mask.view(batch_size * seq_num, -1)
+        else:
+            decoder_input_ids = decoder_input_ids.repeat_interleave(seq_num, dim=0)
+            if decoder_attention_mask is not None:
+                decoder_attention_mask = decoder_attention_mask.repeat_interleave(seq_num, dim=0)
+            
         decoder_outputs = self.decoder(
             input_ids=decoder_input_ids,
             attention_mask=decoder_attention_mask,
