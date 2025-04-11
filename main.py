@@ -193,6 +193,8 @@ def test(dataloader, scorer, args, gpuid, tok):
     if args.do_generate:
         with torch.no_grad():
             for (i, batch) in enumerate(dataloader):
+                if i>100:
+                    break
                 if args.cuda:
                     to_cuda(batch, args.gpuid[0])
                 input_ids = batch["src_input_ids"]
@@ -385,7 +387,6 @@ def run(rank, args):
         epoch_step = 0
         avg_loss = 0
         avg_loss2 = 0
-        avg_rouge = [0,0,0]
         for (i, batch) in enumerate(dataloader):
             if i<=args.start:
                 continue
@@ -414,17 +415,11 @@ def run(rank, args):
             avg_loss += loss.item()
             avg_loss2 +=loss.item()
             loss.backward()
-            rouge, summary = test_sample(input_ids, input_mask, scorer, tok, batch)
-            avg_rouge = [x + y for x, y in zip(rouge, avg_rouge)]
             if(i%args.cycle==0):
                 print("input: ",i)
                 print("Current Time:", datetime.now().strftime("%H:%M:%S"))
                 print("loss: ",avg_loss2/args.cycle)
-                avg_rouge = [x/args.cycle for x in avg_rouge]
-                print("avg_rouge: ",avg_rouge)
-                avg_rouge = [0,0,0]
                 avg_loss2 = 0
-                print(summary)
                 if args.save_dir :
                     torch.save(scorer.state_dict(), f"./{args.save_dir}/model.pth")
                 
@@ -448,7 +443,7 @@ def run(rank, args):
                 avg_loss = 0
             del loss, output
 
-            if all_step_cnt % 1000 == 0 and all_step_cnt != 0 and step_cnt == 0:
+            if all_step_cnt % 100 == 0 and all_step_cnt != 0 and step_cnt == 0:
                 if args.do_generate:
                     rouge1, rouge2 = test(val_dataloader, scorer, args, gpuid, tok)
                     loss = 1 - 2 * rouge1 * rouge2 / (rouge1 + rouge2)
