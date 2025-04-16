@@ -344,6 +344,8 @@ def run(rank, args):
     # build models
     model_path = args.pretrained if args.pretrained is not None else args.model_type
     scorer = PageSumModel.from_pretrained(model_path, gradient_checkpointing=args.gradient_checkpointing, use_cache=not args.gradient_checkpointing)
+    if args.model_dir:
+        scorer.load_state_dict(torch.load(os.path.join(args.model_dir, "model.pth")))
     if len(args.model_pt) > 0:
         scorer.load_state_dict(torch.load(os.path.join("./cache", args.model_pt), map_location=f'cuda:{gpuid}'))
     if args.cuda:
@@ -494,6 +496,7 @@ if __name__ ==  "__main__":
     parser.add_argument("--end", type=int, default=1000000, help="ending index in dataset")
     parser.add_argument("--cycle", type=int, default=100, help="no of samples after which you want to show and save results")
     parser.add_argument("--save_dir", type=str, default=None, help="Path for the trained model to save it")
+    parser.add_argument("--model_dir", type=str, default=None, help="Path for the trained model to load it")
     args = parser.parse_args()
     if args.cuda is False:
         if args.evaluate:
