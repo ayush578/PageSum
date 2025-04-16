@@ -17,7 +17,6 @@ from functools import partial
 import logging
 import nltk
 from nltk import sent_tokenize
-nltk.download('punkt_tab')
 from modeling_bart_ours import PageSumModel
 from transformers import Adafactor
 from config import arxiv, arxiv_discourse, pubmed, govreport, multinews
