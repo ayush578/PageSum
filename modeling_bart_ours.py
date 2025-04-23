@@ -1812,7 +1812,7 @@ class PageSum(BartPretrainedModel):
 
         self.encoder = BartEncoder(config, self.shared)
         self.decoder = BartDecoder(config, self.shared)
-
+        self.lin = nn.Linear(config.d_model, 1)
         self.init_weights()
 
     def get_input_embeddings(self):
@@ -1888,13 +1888,18 @@ class PageSum(BartPretrainedModel):
        
         batch_size = encoder_outputs[0].size(0)
         embed_dim = encoder_outputs[0].size(-1)
-        encoder_hidden_states = encoder_outputs[0].view(batch_size * seq_num, -1, embed_dim)
-        attention_mask = attention_mask.view(batch_size * seq_num, -1)
 
-        decoder_input_ids = torch.repeat_interleave(decoder_input_ids, seq_num, dim=0)
-        if decoder_attention_mask is not None:
-            decoder_attention_mask = torch.repeat_interleave(decoder_attention_mask, seq_num, dim=0)
-        # decoder outputs consists of (dec_features, past_key_value, dec_hidden, dec_attn)
+        encoder_hidden_states = encoder_outputs[0].view(batch_size, seq_num, -1, embed_dim)  # [bz, seq_num, seq_len, dim]
+        encoder_hidden_states = encoder_hidden_states.transpose(1, 2)  # [bz, seq_len, seq_num, dim]
+        encoder_hidden_states = encoder_hidden_states.reshape(-1, seq_num, embed_dim) # [bz x seq_len, seq_num, dim]
+        s = self.lin(encoder_hidden_states) # [bz x seq_len, seq_num, 1]
+        s = torch.softmax(s, dim=1) # [bz x seq_len, seq_num, 1]
+        encoder_hidden_states = torch.matmul(encoder_hidden_states.transpose(1, 2), s).squeeze(-1) # [bz x seq_len, dim]
+        encoder_hidden_states = encoder_hidden_states.view(batch_size, -1, embed_dim) # [bz, seq_len, dim]
+
+        attention_mask = attention_mask.view(batch_size, seq_num, -1)  # [bz, seq_num, dim]
+        attention_mask = attention_mask.max(dim=1).values  # [batch_size, dim]
+
         decoder_outputs = self.decoder(
             input_ids=decoder_input_ids,
             attention_mask=decoder_attention_mask,
@@ -1912,11 +1917,10 @@ class PageSum(BartPretrainedModel):
         
 
         if not return_dict:
-            decoder_outputs[0] = decoder_outputs.view(batch_size, seq_num, -1, decoder_outputs[0].size(-1))
+            decoder_outputs[0] = decoder_outputs
             return decoder_outputs + encoder_outputs
         else:
             last_hidden_state = decoder_outputs.last_hidden_state
-            last_hidden_state = last_hidden_state.view(batch_size, seq_num, -1, last_hidden_state.size(-1))
 
         return Seq2SeqModelOutput(
             last_hidden_state=last_hidden_state,
@@ -1939,8 +1943,6 @@ class PageSumModel(BartPretrainedModel):
         self.model = PageSum(config)
         self.register_buffer("final_logits_bias", torch.zeros((1, self.model.shared.num_embeddings)))
         self.lm_head = nn.Linear(config.d_model, self.model.shared.num_embeddings, bias=False)
-        self.lin = nn.Linear(config.d_model, 1)
-        
         self.seq_num = 1
 
         self.init_weights()
@@ -2028,16 +2030,7 @@ class PageSumModel(BartPretrainedModel):
             return_dict=return_dict,
             seq_num=self.seq_num,
         )
-        lm_logits = outputs[0]  # [bz, seq_num, seq_len, dim]
-        lm_logits = lm_logits.transpose(1, 2)  # [bz, seq_len, seq_num, dim]
-        batch_size, seq_len, seq_num, dim = lm_logits.size()
-        lm_logits = lm_logits.reshape(-1, seq_num, dim) # [bz x seq_len, seq_num, dim]
-        s = self.lin(lm_logits)
-        s = torch.softmax(s, dim=1)
-        lm_logits = torch.matmul(lm_logits.transpose(1, 2), s).squeeze(-1) # [bz x seq_len, dim]
-        lm_logits = lm_logits.view(batch_size, seq_len, dim)
-
-
+        lm_logits = outputs[0]  # [bz, seq_len, dim]
         lm_logits = self.lm_head(lm_logits) + self.final_logits_bias
 
         masked_lm_loss = None
@@ -2161,11 +2154,6 @@ class PageSumModel(BartPretrainedModel):
 
     def _reorder_cache(self, past, beam_idx):
         reordered_past = ()
-        beam_idx = beam_idx * self.seq_num
-        beam_idx = torch.repeat_interleave(beam_idx.unsqueeze(1), self.seq_num, dim=1)
-        for i in range(self.seq_num):
-            beam_idx[:, i] = beam_idx[:, i] + i
-        beam_idx = beam_idx.view(-1)
         for layer_past in past:
             # cached cross_attention states don't have to be reordered -> they are always the same
             reordered_past += (
