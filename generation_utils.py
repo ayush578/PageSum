@@ -23,8 +23,9 @@ import torch.distributed as dist
 from torch.nn import functional as F
 
 from transformers.file_utils import ModelOutput
-from transformers.generation_beam_search import BeamScorer, BeamSearchScorer
-from transformers.generation_logits_process import (
+# from transformers.generation_beam_search import BeamScorer, BeamSearchScorer
+from transformers.generation import BeamScorer, BeamSearchScorer
+from transformers.generation import (
     EncoderNoRepeatNGramLogitsProcessor,
     ForcedBOSTokenLogitsProcessor,
     ForcedEOSTokenLogitsProcessor,
@@ -39,8 +40,6 @@ from transformers.generation_logits_process import (
     TemperatureLogitsWarper,
     TopKLogitsWarper,
     TopPLogitsWarper,
-)
-from transformers.generation_stopping_criteria import (
     MaxLengthCriteria,
     MaxTimeCriteria,
     StoppingCriteriaList,
@@ -1856,7 +1855,7 @@ class GenerationMixin:
             # increase cur_len
             cur_len = cur_len + 1
 
-            if beam_scorer.is_done or stopping_criteria(input_ids, scores):
+            if beam_scorer.is_done or stopping_criteria(input_ids, scores).any().item():
                 if not synced_gpus:
                     break
                 else:
