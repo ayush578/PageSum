@@ -192,7 +192,7 @@ def test(dataloader, scorer, args, gpuid, tok):
     if args.do_generate:
         with torch.no_grad():
             for (i, batch) in enumerate(dataloader):
-                if(i%args.test_limit==0 and i!=0):
+                if (i%args.test_limit==0 and i!=0):
                     break
                 if args.cuda:
                     to_cuda(batch, args.gpuid[0])
@@ -436,8 +436,8 @@ if __name__ ==  "__main__":
     parser.add_argument("--model_pt", default="", type=str, help="model path")
     parser.add_argument("--config", default="base", type=str, help="config path")
     parser.add_argument("--start", type=int, default=0, help="strting index in dataset")
-    parser.add_argument("--end", type=int, default=100000, help="ending index in dataset")
-    parser.add_argument("--test_limit", type=int, default=500, help="limit for test")
+    parser.add_argument("--end", type=int, default=1000000, help="ending index in dataset")
+    parser.add_argument("--test_timit", type=int, default=500, help="test timit")
     parser.add_argument("--cycle", type=int, default=100, help="no of samples after which you want to show and save results")
     parser.add_argument("--save_dir", type=str, default=None, help="Path for the trained model to save it")
     parser.add_argument("--model_dir", type=str, default=None, help="Path for the trained model to load it")
