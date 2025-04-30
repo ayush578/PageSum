@@ -188,10 +188,12 @@ def test(dataloader, scorer, args, gpuid, tok):
     else:
         mle_fn = nn.CrossEntropyLoss(ignore_index=tok.pad_token_id)
     rouge_score = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=True)
-    rouge1, rouge2 = 0, 0
+    rouge1, rouge2, rougeL = 0, 0, 0
     if args.do_generate:
         with torch.no_grad():
             for (i, batch) in enumerate(dataloader):
+                if(i%args.test_limit==0 and i!=0):
+                    break
                 if args.cuda:
                     to_cuda(batch, args.gpuid[0])
                 input_ids = batch["src_input_ids"]
@@ -209,9 +211,11 @@ def test(dataloader, scorer, args, gpuid, tok):
                         seq_num=args.num_pages
                     )
                 else:
+                    eos_token_id = torch.tensor([scorer.get_config().eos_token_id], device="cuda:0")
                     summaries = scorer.generate(
                         input_ids=input_ids,
                         attention_mask=input_mask,
+                        eos_token_id = eos_token_id,
                         max_length=args.gen_max_len + 2,  # +2 from original because we start at step=1 and stop before max_length
                         min_length=args.gen_min_len + 1,  # +1 from original because we start at step=1
                         no_repeat_ngram_size=3,
@@ -225,11 +229,11 @@ def test(dataloader, scorer, args, gpuid, tok):
                     score = rouge_score.score("\n".join(sample["abstract"]), "\n".join(sents))
                     rouge1 += score["rouge1"].fmeasure
                     rouge2 += score["rouge2"].fmeasure
+                    rougeL += score["rougeL"].fmeasure
                     cnt += 1
-                if i % 100 == 0:
-                    print(f"batch: {i}")
         rouge1 = rouge1 / cnt
         rouge2 = rouge2 / cnt
+        rougeL = rougeL / cnt
         if len(args.gpuid) > 1:
             rouge1 = torch.FloatTensor([rouge1]).to(gpuid)
             dist.all_reduce(rouge1, op=dist.reduce_op.SUM)
@@ -238,7 +242,7 @@ def test(dataloader, scorer, args, gpuid, tok):
             dist.all_reduce(rouge2, op=dist.reduce_op.SUM)
             rouge2 = rouge2.item() / len(args.gpuid)
         scorer.train()
-        return rouge1, rouge2
+        return rouge1, rouge2, rougeL
     else:
         with torch.no_grad():
             for (i, batch) in enumerate(dataloader):
@@ -270,36 +274,6 @@ def test(dataloader, scorer, args, gpuid, tok):
             loss = loss.item() / len(args.gpuid)
         scorer.train()
         return loss
-    
-def test_sample(input_ids, input_mask, scorer, tok, batch):
-    scorer.eval()
-    cnt=0
-    rouge_score = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=True)
-    rouge1, rouge2, rougeL = 0, 0, 0
-    summaries = scorer.generate(
-        input_ids=input_ids,
-        attention_mask=input_mask,
-        max_length=args.gen_max_len + 2,  # +2 from original because we start at step=1 and stop before max_length
-        min_length=args.gen_min_len + 1,  # +1 from original because we start at step=1
-        no_repeat_ngram_size=3,
-        length_penalty=2.0,
-        early_stopping=True,
-        seq_num=args.num_pages
-    )
-    dec = [tok.decode(g, skip_special_tokens=True, clean_up_tokenization_spaces=False) for g in summaries]
-    for (sample, d) in zip(batch["data"], dec):
-        sents = sent_tokenize(d)
-        score = rouge_score.score("\n".join(sample["abstract"]), "\n".join(sents))
-        rouge1 += score["rouge1"].fmeasure
-        rouge2 += score["rouge2"].fmeasure
-        rougeL += score["rougeL"].fmeasure
-        cnt += 1
-    rouge1 = rouge1 / cnt
-    rouge2 = rouge2 / cnt
-    rougeL = rougeL / cnt
-    scorer.train()
-    return [rouge1, rouge2, rougeL], dec
-
 
 def run(rank, args):
     if args.config == "arxiv":
@@ -328,8 +302,8 @@ def run(rank, args):
     tok = BartTokenizer.from_pretrained(args.model_type)
     collate_fn = partial(collate_mp, pad_token_id=tok.pad_token_id, is_test=True)
     collate_fn_val = partial(collate_mp, pad_token_id=tok.pad_token_id, is_test=True)
-    train_set = PageSumDataset(f"./{args.dataset}/{args.datatype}/train", args.model_type, is_test=True, page_max_len=args.page_max_len, tgt_max_len=args.tgt_max_len, num_pages=args.num_pages, page_type=args.page_type)
-    val_set = PageSumDataset(f"./{args.dataset}/{args.datatype}/val", args.model_type, is_test=True, page_max_len=args.page_max_len, tgt_max_len=args.tgt_max_len, num_pages=args.num_pages, page_type=args.page_type)
+    train_set = PageSumDataset(f"/home/ubuntu/mtp/PageSum/{args.dataset}/{args.datatype}/train", args.model_type, is_test=True, page_max_len=args.page_max_len, tgt_max_len=args.tgt_max_len, num_pages=args.num_pages, page_type=args.page_type)
+    val_set = PageSumDataset(f"/home/ubuntu/mtp/PageSum/{args.dataset}/{args.datatype}/val", args.model_type, is_test=True, page_max_len=args.page_max_len, tgt_max_len=args.tgt_max_len, num_pages=args.num_pages, page_type=args.page_type)
     if is_mp:
         train_sampler = torch.utils.data.distributed.DistributedSampler(
     	 train_set, num_replicas=world_size, rank=rank, shuffle=False)
@@ -349,10 +323,16 @@ def run(rank, args):
         scorer.load_state_dict(torch.load(os.path.join("./cache", args.model_pt), map_location=f'cuda:{gpuid}'))
     if args.cuda:
         if len(args.gpuid) == 1:
-            scorer = scorer.cuda()
+            scorer = scorer.to("cuda:0")
         else:
             dist.init_process_group("nccl", rank=rank, world_size=world_size)
             scorer = nn.parallel.DistributedDataParallel(scorer.to(gpuid), [gpuid], find_unused_parameters=False)
+    for name, param in scorer.named_parameters():
+        if "encoder" in name:
+            param.data = param.data.to("cuda:1")
+        if "decoder" in name:
+            param.data = param.data.to("cuda:0")
+        # print(f"Layer: {name} | Device: {param.device}")
     scorer.train()
     mle_fn = label_smoothing_loss(ignore_index=tok.pad_token_id, epsilon=args.smooth)
     init_lr = args.max_lr / args.warmup_steps
@@ -362,7 +342,6 @@ def run(rank, args):
         s_optimizer = optim.Adam(scorer.parameters(), lr=init_lr)
     if is_master:
         recorder.write_config(args, [scorer], __file__)
-    minimum_loss = 1e5
     all_step_cnt = 0
     if len(args.gpuid) > 1:
         if is_master:
@@ -380,13 +359,10 @@ def run(rank, args):
     print(len(dataloader))
     for epoch in range(args.epoch):
         print("epoch: ",epoch)
-        print("Current Time:", datetime.now().strftime("%H:%M:%S"))
+        print("Current Time:", datetime.now().strftime("%H:%M:%S"),flush=True)
         s_optimizer.zero_grad()
         step_cnt = 0
         epoch_step = 0
-        avg_loss = 0
-        avg_loss2 = 0
-        avg_rouge = [0,0,0]
         for (i, batch) in enumerate(dataloader):
             if i<=args.start:
                 continue
@@ -412,22 +388,7 @@ def run(rank, args):
             gold = batch["tgt_input_ids"][:, 1:]  # shift right
             loss = mle_fn(output.transpose(1, 2), gold)
             loss = loss / args.accumulate_step
-            avg_loss += loss.item()
-            avg_loss2 +=loss.item()
             loss.backward()
-            rouge, summary = test_sample(input_ids, input_mask, scorer, tok, batch)
-            avg_rouge = [x + y for x, y in zip(rouge, avg_rouge)]
-            if(i%args.cycle==0):
-                print("input: ",i)
-                print("Current Time:", datetime.now().strftime("%H:%M:%S"))
-                print("loss: ",avg_loss2/args.cycle)
-                avg_rouge = [x/args.cycle for x in avg_rouge]
-                print("avg_rouge: ",avg_rouge)
-                avg_rouge = [0,0,0]
-                avg_loss2 = 0
-                print(summary)
-                if args.save_dir :
-                    torch.save(scorer.state_dict(), f"./{args.save_dir}/model.pth")
                 
             if step_cnt == args.accumulate_step:
                 if args.grad_norm > 0:
@@ -440,37 +401,20 @@ def run(rank, args):
                     param_group['lr'] = lr
                 s_optimizer.step()
                 s_optimizer.zero_grad()
-            if epoch_step % args.report_freq == 0 and step_cnt == 0 and is_master:
-                print("id: %d"%id)
-                recorder.print("epoch: %d, batch: %d, avg loss: %.6f"%(epoch+1, epoch_step, avg_loss / args.report_freq))
-                recorder.print(f"learning rate: {lr:.6f}")
-                recorder.plot("loss", {"loss": avg_loss / args.report_freq}, all_step_cnt)
-                recorder.print()
-                avg_loss = 0
             del loss, output
 
-            if all_step_cnt % 1000 == 0 and all_step_cnt != 0 and step_cnt == 0:
-                if args.do_generate:
-                    rouge1, rouge2 = test(val_dataloader, scorer, args, gpuid, tok)
-                    loss = 1 - 2 * rouge1 * rouge2 / (rouge1 + rouge2)
-                else:
-                    loss = test(val_dataloader, scorer, args, gpuid, tok)
-                if loss < minimum_loss and is_master:
-                    minimum_loss = loss
-                    if is_mp:
-                        recorder.save(scorer.module, "scorer_best.bin")
-                    else:
-                        recorder.save(scorer, "scorer_best.bin")
-                    recorder.print("best loss - epoch: %d, batch: %d"%(epoch, i / args.accumulate_step))
-                if is_master:
-                    if is_mp:
-                        recorder.save(scorer.module, "scorer.bin")
-                    else:
-                        recorder.save(scorer, "scorer.bin")
-                    recorder.save(s_optimizer, "optimizer.bin")
-                    recorder.print("val loss: %.6f"%loss)
-                    if args.do_generate:
-                        recorder.print(f"ROUGE-1: {rouge1:.6f}, ROUGE-2: {rouge2:.6f}")
+            if (i%args.cycle==0):
+                print("input: ",i)
+                print("Current Time:", datetime.now().strftime("%H:%M:%S"),flush=True)
+                if args.save_dir :
+                    torch.save(scorer.state_dict(), f"./{args.save_dir}/model.pth")
+                # if args.do_generate:
+                #     rouge1, rouge2, rougeL = test(val_dataloader, scorer, args, gpuid, tok)
+                #     loss = 1 - 2 * rouge1 * rouge2 / (rouge1 + rouge2)
+                #     print(f"rouge1: {rouge1}, rouge2: {rouge2}, rougeL: {rougeL}")
+                # else:
+                #     loss = test(val_dataloader, scorer, args, gpuid, tok)
+                # print("Current Time:", datetime.now().strftime("%H:%M:%S"),flush=True)
 
 
 def main(args):
@@ -492,7 +436,8 @@ if __name__ ==  "__main__":
     parser.add_argument("--model_pt", default="", type=str, help="model path")
     parser.add_argument("--config", default="base", type=str, help="config path")
     parser.add_argument("--start", type=int, default=0, help="strting index in dataset")
-    parser.add_argument("--end", type=int, default=1000000, help="ending index in dataset")
+    parser.add_argument("--end", type=int, default=100000, help="ending index in dataset")
+    parser.add_argument("--test_limit", type=int, default=500, help="limit for test")
     parser.add_argument("--cycle", type=int, default=100, help="no of samples after which you want to show and save results")
     parser.add_argument("--save_dir", type=str, default=None, help="Path for the trained model to save it")
     parser.add_argument("--model_dir", type=str, default=None, help="Path for the trained model to load it")
