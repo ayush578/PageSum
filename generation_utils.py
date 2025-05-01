@@ -414,7 +414,12 @@ class GenerationMixin:
             input_ids = input_ids.view(batch_size * seq_num, -1)  # change shape
             if attention_mask is not None:
                 attention_mask = attention_mask.view(batch_size * seq_num, -1)  # change shape
+            input_ids = input_ids.to("cuda:3")
+            attention_mask = attention_mask.to("cuda:3")
             output = ModelOutput = encoder(input_ids, attention_mask=attention_mask, return_dict=True, **encoder_kwargs)
+            input_ids = input_ids.to("cuda:2")
+            attention_mask = attention_mask.to("cuda:2")
+            encoder_hidden_states = output.last_hidden_state.to("cuda:2")
             encoder_hidden_states = output.last_hidden_state
             encoder_hidden_states = encoder_hidden_states.view(batch_size, -1, encoder_hidden_states.size(-1))
             attention_mask = attention_mask.view(batch_size, -1)

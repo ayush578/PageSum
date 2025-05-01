@@ -751,9 +751,11 @@ class BartEncoder(BartPretrainedModel):
         else:
             raise ValueError("You have to specify either input_ids or inputs_embeds")
 
+        input_ids = input_ids.to("cuda:2")
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids) * self.embed_scale
-
+        input_ids = input_ids.to("cuda:3")
+        inputs_embeds = inputs_embeds.to("cuda:3")
         embed_pos = self.embed_positions(input_shape)
 
         hidden_states = inputs_embeds + embed_pos
@@ -862,7 +864,7 @@ class BartDecoder(BartPretrainedModel):
         if input_shape[-1] > 1:
             combined_attention_mask = _make_causal_mask(
                 input_shape, inputs_embeds.dtype, past_key_values_length=past_key_values_length
-            ).to(self.device)
+            ).to("cuda:2")
 
         if attention_mask is not None:
             # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
@@ -1868,6 +1870,11 @@ class PageSum(BartPretrainedModel):
             input_ids = input_ids.view(batch_size * seq_num, -1)  # change shape
             if attention_mask is not None:
                 attention_mask = attention_mask.view(batch_size * seq_num, -1)  # change shape
+            device = torch.device('cuda:3')
+            input_ids = input_ids.to(device) if input_ids is not None else None
+            attention_mask = attention_mask.to(device) if attention_mask is not None else None
+            head_mask = head_mask.to(device) if head_mask is not None else None
+            inputs_embeds = inputs_embeds.to(device) if inputs_embeds is not None else None
             encoder_outputs = self.encoder(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
@@ -1890,14 +1897,16 @@ class PageSum(BartPretrainedModel):
         embed_dim = encoder_outputs[0].size(-1)
         encoder_hidden_states = encoder_outputs[0].view(batch_size * seq_num, -1, embed_dim)
         attention_mask = attention_mask.view(batch_size * seq_num, -1)
+        encoder_hidden_states = encoder_hidden_states.to("cuda:2") if encoder_hidden_states is not None else None
+        attention_mask = attention_mask.to("cuda:2") if attention_mask is not None else None
         if decoder_input_ids.size(1) % seq_num == 0:
             decoder_input_ids = decoder_input_ids.view(batch_size * seq_num, -1)
             decoder_attention_mask = decoder_attention_mask.view(batch_size * seq_num, -1)
         else:
             decoder_input_ids = decoder_input_ids.repeat_interleave(seq_num, dim=0)
             if decoder_attention_mask is not None:
-                decoder_attention_mask = decoder_attention_mask.repeat_interleave(seq_num, dim=0)
-            
+                decoder_attention_mask = decoder_attention_mask.repeat_interleave(seq_num, dim=0)    
+        
         decoder_outputs = self.decoder(
             input_ids=decoder_input_ids,
             attention_mask=decoder_attention_mask,
@@ -1927,9 +1936,9 @@ class PageSum(BartPretrainedModel):
             decoder_hidden_states=decoder_outputs.hidden_states,
             decoder_attentions=decoder_outputs.attentions,
             cross_attentions=decoder_outputs.cross_attentions,
-            encoder_last_hidden_state=encoder_outputs.last_hidden_state,
-            encoder_hidden_states=encoder_outputs.hidden_states,
-            encoder_attentions=encoder_outputs.attentions,
+            encoder_last_hidden_state=encoder_outputs.last_hidden_state.to("cuda:2") if encoder_outputs.last_hidden_state is not None else None,
+            encoder_hidden_states=encoder_outputs.hidden_states.to("cuda:2") if encoder_outputs.hidden_states is not None else None,
+            encoder_attentions=encoder_outputs.attentions.to("cuda:2") if encoder_outputs.attentions is not None else None,
         )
 
 
@@ -1953,6 +1962,9 @@ class PageSumModel(BartPretrainedModel):
 
     def get_decoder(self):
         return self.model.get_decoder()
+    
+    def get_config(self):
+        return self.config
 
     def set_seq_num(self, value):
         self.seq_num = value
