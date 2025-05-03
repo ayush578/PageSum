@@ -211,7 +211,7 @@ def test(dataloader, scorer, args, gpuid, tok):
                         seq_num=args.num_pages
                     )
                 else:
-                    eos_token_id = torch.tensor([scorer.get_config().eos_token_id], device="cuda:0")
+                    eos_token_id = torch.tensor([scorer.get_config().eos_token_id], device="cuda:2")
                     summaries = scorer.generate(
                         input_ids=input_ids,
                         attention_mask=input_mask,
@@ -323,15 +323,15 @@ def run(rank, args):
         scorer.load_state_dict(torch.load(os.path.join("./cache", args.model_pt), map_location=f'cuda:{gpuid}'))
     if args.cuda:
         if len(args.gpuid) == 1:
-            scorer = scorer.to("cuda:0")
+            scorer = scorer.to("cuda:2")
         else:
             dist.init_process_group("nccl", rank=rank, world_size=world_size)
             scorer = nn.parallel.DistributedDataParallel(scorer.to(gpuid), [gpuid], find_unused_parameters=False)
     for name, param in scorer.named_parameters():
         if "encoder" in name:
-            param.data = param.data.to("cuda:1")
+            param.data = param.data.to("cuda:3")
         if "decoder" in name:
-            param.data = param.data.to("cuda:0")
+            param.data = param.data.to("cuda:2")
         # print(f"Layer: {name} | Device: {param.device}")
     scorer.train()
     mle_fn = label_smoothing_loss(ignore_index=tok.pad_token_id, epsilon=args.smooth)
@@ -436,8 +436,8 @@ if __name__ ==  "__main__":
     parser.add_argument("--model_pt", default="", type=str, help="model path")
     parser.add_argument("--config", default="base", type=str, help="config path")
     parser.add_argument("--start", type=int, default=0, help="strting index in dataset")
-    parser.add_argument("--end", type=int, default=1000000, help="ending index in dataset")
-    parser.add_argument("--test_timit", type=int, default=500, help="test timit")
+    parser.add_argument("--end", type=int, default=100000, help="ending index in dataset")
+    parser.add_argument("--test_limit", type=int, default=500, help="test limit")
     parser.add_argument("--cycle", type=int, default=100, help="no of samples after which you want to show and save results")
     parser.add_argument("--save_dir", type=str, default=None, help="Path for the trained model to save it")
     parser.add_argument("--model_dir", type=str, default=None, help="Path for the trained model to load it")

@@ -123,6 +123,35 @@ class BartLearnedPositionalEmbedding(nn.Embedding):
         )
         return super().forward(positions + self.offset)
 
+class BartLearnedPagePositionalEmbedding(nn.Embedding):
+    """
+    This module learns positional embeddings for pages (like positional encodings for tokens),
+    assuming inputs are shaped as (batch_size * num_pages, seq_len).
+    """
+
+    def __init__(self, num_pages: int, embedding_dim: int):
+        """
+        Args:
+            num_pages: Maximum number of pages (positions).
+            embedding_dim: Dimension of the embeddings (must match token embedding dim).
+        """
+        self.offset = 0  # Optional offset if you want to reserve some indices
+        super().__init__(num_pages + self.offset, embedding_dim)
+
+    def forward(self, batch_size: int, num_pages: int, device=None):
+        """
+        Args:
+            batch_size: The batch size.
+            num_pages: Number of pages per sample in batch.
+            device: Device on which to allocate the embeddings.
+        Returns:
+            A tensor of shape (batch_size * num_pages, 1, embedding_dim), 
+            ready to be broadcast over the token sequence.
+        """
+        page_positions = torch.arange(
+            0, num_pages, dtype=torch.long, device=device or self.weight.device
+        ).unsqueeze(0).repeat(batch_size, 1).view(-1)  # Shape: (batch_size * num_pages,)
+        return super().forward(page_positions + self.offset).unsqueeze(1)  # (bs*num_pages, 1, dim)
 
 class BartAttention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
@@ -682,6 +711,7 @@ class BartEncoder(BartPretrainedModel):
             config.max_position_embeddings,
             embed_dim,
         )
+        self.embed_positions_page = BartLearnedPagePositionalEmbedding(7, embed_dim)
         self.layers = nn.ModuleList([BartEncoderLayer(config) for _ in range(config.encoder_layers)])
         self.layernorm_embedding = nn.LayerNorm(embed_dim)
 
@@ -751,14 +781,16 @@ class BartEncoder(BartPretrainedModel):
         else:
             raise ValueError("You have to specify either input_ids or inputs_embeds")
 
-        input_ids = input_ids.to("cuda:0")
+        input_ids = input_ids.to("cuda:2")
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids) * self.embed_scale
-        input_ids = input_ids.to("cuda:1")
-        inputs_embeds = inputs_embeds.to("cuda:1")
+        input_ids = input_ids.to("cuda:3")
+        inputs_embeds = inputs_embeds.to("cuda:3")
         embed_pos = self.embed_positions(input_shape)
+        embed_pos_page = self.embed_positions_page(batch_size=input_shape[0]//7, num_pages=7)
 
         hidden_states = inputs_embeds + embed_pos
+        hidden_states = hidden_states + embed_pos_page
         hidden_states = self.layernorm_embedding(hidden_states)
         hidden_states = F.dropout(hidden_states, p=self.dropout, training=self.training)
 
@@ -864,7 +896,7 @@ class BartDecoder(BartPretrainedModel):
         if input_shape[-1] > 1:
             combined_attention_mask = _make_causal_mask(
                 input_shape, inputs_embeds.dtype, past_key_values_length=past_key_values_length
-            ).to("cuda:0")
+            ).to("cuda:2")
 
         if attention_mask is not None:
             # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
@@ -1870,7 +1902,7 @@ class PageSum(BartPretrainedModel):
             input_ids = input_ids.view(batch_size * seq_num, -1)  # change shape
             if attention_mask is not None:
                 attention_mask = attention_mask.view(batch_size * seq_num, -1)  # change shape
-            device = torch.device('cuda:1')
+            device = torch.device('cuda:3')
             input_ids = input_ids.to(device) if input_ids is not None else None
             attention_mask = attention_mask.to(device) if attention_mask is not None else None
             head_mask = head_mask.to(device) if head_mask is not None else None
@@ -1902,8 +1934,8 @@ class PageSum(BartPretrainedModel):
         if decoder_attention_mask is not None:
             decoder_attention_mask = torch.repeat_interleave(decoder_attention_mask, seq_num, dim=0)
         # decoder outputs consists of (dec_features, past_key_value, dec_hidden, dec_attn)
-        encoder_hidden_states = encoder_hidden_states.to("cuda:0") if encoder_hidden_states is not None else None
-        attention_mask = attention_mask.to("cuda:0") if attention_mask is not None else None
+        encoder_hidden_states = encoder_hidden_states.to("cuda:2") if encoder_hidden_states is not None else None
+        attention_mask = attention_mask.to("cuda:2") if attention_mask is not None else None
 
         decoder_outputs = self.decoder(
             input_ids=decoder_input_ids,
@@ -1934,9 +1966,9 @@ class PageSum(BartPretrainedModel):
             decoder_hidden_states=decoder_outputs.hidden_states,
             decoder_attentions=decoder_outputs.attentions,
             cross_attentions=decoder_outputs.cross_attentions,
-            encoder_last_hidden_state=encoder_outputs.last_hidden_state.to("cuda:0") if encoder_outputs.last_hidden_state is not None else None,
-            encoder_hidden_states=encoder_outputs.hidden_states.to("cuda:0") if encoder_outputs.hidden_states is not None else None,
-            encoder_attentions=encoder_outputs.attentions.to("cuda:0") if encoder_outputs.attentions is not None else None,
+            encoder_last_hidden_state=encoder_outputs.last_hidden_state.to("cuda:2") if encoder_outputs.last_hidden_state is not None else None,
+            encoder_hidden_states=encoder_outputs.hidden_states.to("cuda:2") if encoder_outputs.hidden_states is not None else None,
+            encoder_attentions=encoder_outputs.attentions.to("cuda:2") if encoder_outputs.attentions is not None else None,
         )
 
 
