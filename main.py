@@ -92,51 +92,49 @@ def evaluation(args):
         base_setting(args)
     tok = BartTokenizer.from_pretrained(args.model_type)
     collate_fn = partial(collate_mp, pad_token_id=tok.pad_token_id, is_test=True)
-    test_set = PageSumDataset(f"./{args.dataset}/{args.datatype}/test", args.model_type, is_test=True, page_max_len=args.page_max_len, tgt_max_len=args.tgt_max_len, num_pages=args.num_pages, page_type=args.page_type)
+    test_set = PageSumDataset(f"/home/ubuntu/mtp/PageSum/{args.dataset}/{args.datatype}/test", args.model_type, is_test=True, page_max_len=args.page_max_len, tgt_max_len=args.tgt_max_len, num_pages=args.num_pages, page_type=args.page_type)
     dataloader = DataLoader(test_set, batch_size=1, shuffle=False, num_workers=0, collate_fn=collate_fn)
     # build models
     model_path = args.pretrained if args.pretrained is not None else args.model_type
     scorer = PageSumModel.from_pretrained(model_path, gradient_checkpointing=args.gradient_checkpointing, use_cache=not args.gradient_checkpointing)
     if args.cuda:
-        scorer = scorer.cuda()
+        scorer = scorer.to("cuda:0")
 
-    scorer.load_state_dict(torch.load(os.path.join("./cache", args.model_pt), map_location=f'cuda:{args.gpuid[0]}'))
+    if args.model_dir:
+        scorer.load_state_dict(torch.load(os.path.join(args.model_dir, "model.pth")))
+    
+    for name, param in scorer.named_parameters():
+        if "encoder" in name:
+            param.data = param.data.to("cuda:1")
+        if "decoder" in name:
+            param.data = param.data.to("cuda:0")
     scorer.eval()
 
-    model_name = args.model_pt.split("/")[0]
-
-    def mkdir(path):
-        if not os.path.exists(path):
-            os.mkdir(path)
+    model_name = args.model_dir.split("/")[-1]
 
     print(model_name)
-    root_dir = "./result/%s"%model_name
-    mkdir(root_dir)
     
     cnt = 0
-    loss = 0
-
-    if args.smooth > 0:
-        mle_fn = label_smoothing_loss(ignore_index=tok.pad_token_id, epsilon=args.smooth)
-    else:
-        mle_fn = nn.CrossEntropyLoss(ignore_index=tok.pad_token_id)
     rouge_score = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=True)
-    rouge1, rouge2 = 0, 0
+    rouge1, rouge2, rougeL = 0, 0, 0
     scorer.set_seq_num(args.num_pages)
     do_generate = True
-    do_score = False
 
-    with torch.no_grad(), open(os.path.join(root_dir, f"test.out"), "w") as f:
+    with torch.no_grad():
         for (i, batch) in enumerate(dataloader):
+            if (i%args.test_limit==0 and i!=0):
+                break
             if args.cuda:
                 to_cuda(batch, args.gpuid[0])
             input_ids = batch["src_input_ids"]
             input_ids = input_ids.view(input_ids.size(0), -1)
             input_mask = input_ids != tok.pad_token_id
+            eos_token_id = torch.tensor([scorer.get_config().eos_token_id], device="cuda:0")
             if do_generate:
                 summaries = scorer.generate(
                     input_ids=input_ids,
                     attention_mask=input_mask,
+                    eos_token_id = eos_token_id,
                     max_length=args.gen_max_len + 2,  # +2 from original because we start at step=1 and stop before max_length
                     min_length=args.gen_min_len + 1,  # +1 from original because we start at step=1
                     no_repeat_ngram_size=3,
@@ -148,35 +146,16 @@ def evaluation(args):
                 for (sample, d) in zip(batch["data"], dec):
                     sents = sent_tokenize(d)
                     score = rouge_score.score("\n".join(sample["abstract"]), "\n".join(sents))
-                    _rouge1 = score["rouge1"].fmeasure
-                    _rouge2 = score["rouge2"].fmeasure
-                    rouge1 += _rouge1
-                    rouge2 += _rouge2
-                    cnt += 1
-                for x in dec:
-                    x = x.replace("\n", " ")
-                    print(x, file=f)
-            if i % 10 == 0:
-                print(f"batch: {i}")
+                    rouge1 += score["rouge1"].fmeasure
+                    rouge2 += score["rouge2"].fmeasure
+                    rougeL += score["rougeL"].fmeasure
+                    cnt += 1    
+            print(f"batch: {i}")
+            print(f"rouge1: {rouge1/cnt}, rouge2: {rouge2/cnt}, rougeL: {rougeL/cnt}")
             
-            if do_score:
-                decoder_input_ids = batch["tgt_input_ids"]
-                decoder_attention_mask = decoder_input_ids != tok.pad_token_id
-                output = scorer(
-                    input_ids=input_ids, 
-                    attention_mask=input_mask,
-                    decoder_input_ids=decoder_input_ids, 
-                    decoder_attention_mask=decoder_attention_mask,
-                    output_hidden_states=False
-                    )
-                output = output[0]
-                output = output[:, :-1]
-                gold = decoder_input_ids[:, 1:]
-                loss += mle_fn(output.transpose(1, 2), gold)
-            
-    print(loss / i)
-    print(rouge1 / cnt)
-    print(rouge2 / cnt)
+    # print(loss / i)
+    # print(rouge1 / cnt)
+    # print(rouge2 / cnt)
 
 
 def test(dataloader, scorer, args, gpuid, tok):
@@ -436,8 +415,8 @@ if __name__ ==  "__main__":
     parser.add_argument("--model_pt", default="", type=str, help="model path")
     parser.add_argument("--config", default="base", type=str, help="config path")
     parser.add_argument("--start", type=int, default=0, help="strting index in dataset")
-    parser.add_argument("--end", type=int, default=1000000, help="ending index in dataset")
-    parser.add_argument("--test_timit", type=int, default=500, help="test timit")
+    parser.add_argument("--end", type=int, default=100000, help="ending index in dataset")
+    parser.add_argument("--test_limit", type=int, default=500, help="test limit")
     parser.add_argument("--cycle", type=int, default=100, help="no of samples after which you want to show and save results")
     parser.add_argument("--save_dir", type=str, default=None, help="Path for the trained model to save it")
     parser.add_argument("--model_dir", type=str, default=None, help="Path for the trained model to load it")
