@@ -21,6 +21,13 @@ from modeling_bart_ours import PageSumModel
 from transformers import Adafactor
 from config import arxiv, arxiv_discourse, pubmed, govreport, multinews
 from datetime import datetime
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
+import torch.nn.functional as F
+
+
+
 
 
 logging.getLogger("transformers.tokenization_utils").setLevel(logging.ERROR)
@@ -321,6 +328,8 @@ def run(rank, args):
     np.random.seed(args.seed)
     random.seed(args.seed)
     gpuid = args.gpuid[rank]
+    device = torch.device(f"cuda:{gpuid}" if args.cuda and torch.cuda.is_available() else "cpu")
+    embedder = SentenceTransformer("all-MiniLM-L6-v2", device=device)
     is_master = rank == 0
     is_mp = len(args.gpuid) > 1
     world_size = len(args.gpuid)
@@ -330,8 +339,8 @@ def run(rank, args):
     tok = BartTokenizer.from_pretrained(args.model_type)
     collate_fn = partial(collate_mp, pad_token_id=tok.pad_token_id, is_test=True)
     collate_fn_val = partial(collate_mp, pad_token_id=tok.pad_token_id, is_test=True)
-    train_set = PageSumDataset(f"./{args.dataset}/{args.datatype}/train", args.model_type, is_test=True, page_max_len=args.page_max_len, tgt_max_len=args.tgt_max_len, num_pages=args.num_pages, page_type=args.page_type)
-    val_set = PageSumDataset(f"./{args.dataset}/{args.datatype}/val", args.model_type, is_test=True, page_max_len=args.page_max_len, tgt_max_len=args.tgt_max_len, num_pages=args.num_pages, page_type=args.page_type)
+    train_set = PageSumDataset(f"/home/ubuntu/mtp/PageSum/{args.dataset}/{args.datatype}/train", args.model_type, is_test=True, page_max_len=args.page_max_len, tgt_max_len=args.tgt_max_len, num_pages=args.num_pages, page_type=args.page_type)
+    val_set = PageSumDataset(f"/home/ubuntu/mtp/PageSum/{args.dataset}/{args.datatype}/val", args.model_type, is_test=True, page_max_len=args.page_max_len, tgt_max_len=args.tgt_max_len, num_pages=args.num_pages, page_type=args.page_type)
     if is_mp:
         train_sampler = torch.utils.data.distributed.DistributedSampler(
     	 train_set, num_replicas=world_size, rank=rank, shuffle=False)
@@ -344,7 +353,7 @@ def run(rank, args):
         val_dataloader = DataLoader(val_set, batch_size=4, shuffle=False, num_workers=0, collate_fn=collate_fn_val)
     # build models
     model_path = args.pretrained if args.pretrained is not None else args.model_type
-    scorer = PageSumModel.from_pretrained(model_path, gradient_checkpointing=args.gradient_checkpointing, use_cache=not args.gradient_checkpointing)
+    scorer = PageSumModel.from_pretrained(model_path, gradient_checkpointing=args.gradient_checkpointing, use_cache=not args.gradient_checkpointing).to(device)
     if args.model_dir:
         scorer.load_state_dict(torch.load(os.path.join(args.model_dir, "model.pth")))
     if len(args.model_pt) > 0:
@@ -397,11 +406,50 @@ def run(rank, args):
             if args.cuda:
                 to_cuda(batch, gpuid)
             step_cnt += 1
-            input_ids = batch["src_input_ids"]
-            input_ids = input_ids.view(input_ids.size(0), -1)
+            raw_src = batch["src_input_ids"]
+            input_ids = raw_src.view(raw_src.size(0), -1) 
             input_mask = input_ids != tok.pad_token_id
             decoder_input_ids = batch["tgt_input_ids"]
             decoder_attention_mask = decoder_input_ids != tok.pad_token_id
+            gold = decoder_input_ids[:, 1:]  
+            orig_seq_num = scorer.seq_num                # remember full-document setting
+            scorer.set_seq_num(1)  
+            page_summaries = []
+            for p in range(args.num_pages):
+                pid = raw_src[:, p, :].clone()
+                pmask = (pid != tok.pad_token_id).long()
+                gen_ids = scorer.generate(
+                    input_ids=pid,
+                    attention_mask=pmask,
+                    max_length=args.gen_max_len,
+                    min_length=args.gen_min_len,
+                    no_repeat_ngram_size=3,
+                    length_penalty=args.length_penalty,
+                    early_stopping=True,
+                    seq_num=1
+                )
+                page_summaries.append(tok.decode(gen_ids[0], skip_special_tokens=True))
+            scorer.set_seq_num(orig_seq_num)
+            reference = " ".join(batch["data"][0]["abstract"])
+            texts = [reference] + page_summaries
+            embs = embedder.encode(texts, convert_to_tensor=True)
+            ref_emb = embs[0:1]                                        # (1, dim)
+            page_embs = embs[1:] 
+            sims = cosine_similarity(page_embs.cpu().numpy(),
+                                    ref_emb.cpu().numpy()).reshape(-1)
+            sims = np.clip(sims, a_min=0, a_max=None)
+            teacher_w = sims / sims.sum()
+            teacher_w = torch.tensor(teacher_w, device=input_ids.device)
+            student_s = scorer.attention_score(
+                input_ids=input_ids,
+                attention_mask=input_mask,
+                decoder_input_ids=decoder_input_ids,
+                decoder_attention_mask=decoder_attention_mask
+            ) 
+            student_w = student_s.mean(dim=1).mean(dim=0)               # → (num_pages,)
+
+            # 4) compute auxiliary KL loss
+            weight_loss = F.kl_div(student_w.log(), teacher_w, reduction="batchmean") 
             output = scorer(
                 input_ids=input_ids, 
                 attention_mask=input_mask,
@@ -409,10 +457,12 @@ def run(rank, args):
                 decoder_attention_mask=decoder_attention_mask,
                 output_hidden_states=False
                 )
+            logits = output[0][:, :-1, :] 
             output = output[0]
             output = output[:, :-1]  # truncate last token
-            gold = batch["tgt_input_ids"][:, 1:]  # shift right
-            loss = mle_fn(output.transpose(1, 2), gold)
+            # gold = batch["tgt_input_ids"][:, 1:]  # shift right
+            mle_loss = mle_fn(logits.transpose(1, 2), gold)
+            loss = mle_loss + args.lambda_w * weight_loss 
             loss = loss / args.accumulate_step
             avg_loss += loss.item()
             avg_loss2 +=loss.item()
@@ -499,6 +549,8 @@ if __name__ ==  "__main__":
     parser.add_argument("--cycle", type=int, default=100, help="no of samples after which you want to show and save results")
     parser.add_argument("--save_dir", type=str, default=None, help="Path for the trained model to save it")
     parser.add_argument("--model_dir", type=str, default=None, help="Path for the trained model to load it")
+    parser.add_argument("--lambda_w",type=float,default=1.0,help="strength of the auxiliary page‐weight KL loss")
+
     args = parser.parse_args()
     if args.cuda is False:
         if args.evaluate:
