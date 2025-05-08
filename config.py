@@ -13,7 +13,7 @@ def arxiv(args):
     args.dataset = getattr(args, "dataset", "arxiv")  # dataset
     args.smooth = getattr(args, "smooth", 0.1)  # label smoothing
     args.length_penalty = getattr(args, "length_penalty", 2.0)  # length penalty
-    args.do_generate = getattr(args, "do_generate", False)  # do generate
+    args.do_generate = getattr(args, "do_generate", True)  # do generate
     args.page_max_len = getattr(args, "page_max_len", 1024)  # max length for one page
     args.tgt_max_len = getattr(args, "tgt_max_len", 400)  # max length for target
     args.gen_max_len = getattr(args, "gen_max_len", 350)  # max length for generate
