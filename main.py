@@ -21,6 +21,10 @@ from modeling_bart_ours import PageSumModel
 from transformers import Adafactor
 from config import arxiv, arxiv_discourse, pubmed, govreport, multinews
 from datetime import datetime
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
+import torch.nn.functional as F
 
 
 logging.getLogger("transformers.tokenization_utils").setLevel(logging.ERROR)
@@ -253,6 +257,10 @@ def test(dataloader, scorer, args, gpuid, tok):
             loss = loss.item() / len(args.gpuid)
         scorer.train()
         return loss
+    
+def print_gpu_usage():
+    print(f"GPU {0}: {torch.cuda.memory_allocated(0) / 1024**2:.2f} MB allocated, {torch.cuda.memory_reserved(0) / 1024**2:.2f} MB reserved")
+    print(f"GPU {1}: {torch.cuda.memory_allocated(1) / 1024**2:.2f} MB allocated, {torch.cuda.memory_reserved(1) / 1024**2:.2f} MB reserved")
 
 def run(rank, args):
     if args.config == "arxiv":
@@ -272,6 +280,8 @@ def run(rank, args):
     np.random.seed(args.seed)
     random.seed(args.seed)
     gpuid = args.gpuid[rank]
+    device = torch.device(f"cuda:0" if args.cuda and torch.cuda.is_available() else "cpu")
+    embedder = SentenceTransformer("all-MiniLM-L6-v2", device=device)
     is_master = rank == 0
     is_mp = len(args.gpuid) > 1
     world_size = len(args.gpuid)
@@ -350,11 +360,58 @@ def run(rank, args):
             if args.cuda:
                 to_cuda(batch, gpuid)
             step_cnt += 1
-            input_ids = batch["src_input_ids"]
-            input_ids = input_ids.view(input_ids.size(0), -1)
+            raw_src = batch["src_input_ids"]
+            input_ids = raw_src.view(raw_src.size(0), -1) 
             input_mask = input_ids != tok.pad_token_id
             decoder_input_ids = batch["tgt_input_ids"]
             decoder_attention_mask = decoder_input_ids != tok.pad_token_id
+            gold = decoder_input_ids[:, 1:]  
+            orig_seq_num = 7               # remember full-document setting
+            scorer.set_seq_num(1)  
+            page_summaries = []
+            # print_gpu_usage()
+            scorer.eval()
+            with torch.no_grad():
+                eos_token_id = torch.tensor([scorer.get_config().eos_token_id], device="cuda:0")
+                for p in range(args.num_pages):
+                    pid = raw_src[:, p, :].clone()
+                    pmask = (pid != tok.pad_token_id).long()
+                    gen_ids = scorer.generate(
+                        input_ids=pid,
+                        attention_mask=pmask,
+                        eos_token_id = eos_token_id,
+                        max_length=args.gen_max_len,
+                        min_length=args.gen_min_len,
+                        no_repeat_ngram_size=3,
+                        length_penalty=args.length_penalty,
+                        early_stopping=True,
+                        seq_num=1
+                    )
+                    page_summaries.append(tok.decode(gen_ids[0], skip_special_tokens=True))
+                scorer.set_seq_num(orig_seq_num)
+            
+                reference = " ".join(batch["data"][0]["abstract"])
+                texts = [reference] + page_summaries
+                embs = embedder.encode(texts, convert_to_tensor=True)
+                ref_emb = embs[0:1]                                        # (1, dim)
+                page_embs = embs[1:] 
+                sims = cosine_similarity(page_embs.cpu().numpy(),
+                                        ref_emb.cpu().numpy()).reshape(-1)
+                sims = np.clip(sims, a_min=0, a_max=None)
+                teacher_w = sims / sims.sum()
+                teacher_w = torch.tensor(teacher_w, device=input_ids.device)
+                # print_gpu_usage()
+                student_s = scorer.attention_score(
+                    input_ids=input_ids,
+                    attention_mask=input_mask,
+                    decoder_input_ids=decoder_input_ids,
+                    decoder_attention_mask=decoder_attention_mask
+                )
+                student_w = student_s.mean(dim=1).mean(dim=0)               # → (num_pages,)
+                # print_gpu_usage()
+            scorer.train() 
+            # 4) compute auxiliary KL loss
+            weight_loss = F.kl_div(student_w.log(), teacher_w, reduction="batchmean") 
             output = scorer(
                 input_ids=input_ids, 
                 attention_mask=input_mask,
@@ -364,8 +421,9 @@ def run(rank, args):
                 )
             output = output[0]
             output = output[:, :-1]  # truncate last token
-            gold = batch["tgt_input_ids"][:, 1:]  # shift right
-            loss = mle_fn(output.transpose(1, 2), gold)
+            # gold = batch["tgt_input_ids"][:, 1:]  # shift right
+            mle_loss = mle_fn(output.transpose(1, 2), gold)
+            loss = mle_loss + args.lambda_w * weight_loss 
             loss = loss / args.accumulate_step
             loss.backward()
                 
@@ -420,6 +478,8 @@ if __name__ ==  "__main__":
     parser.add_argument("--cycle", type=int, default=100, help="no of samples after which you want to show and save results")
     parser.add_argument("--save_dir", type=str, default=None, help="Path for the trained model to save it")
     parser.add_argument("--model_dir", type=str, default=None, help="Path for the trained model to load it")
+    parser.add_argument("--lambda_w",type=float,default=1.0,help="strength of the auxiliary page‐weight KL loss")
+
     args = parser.parse_args()
     if args.cuda is False:
         if args.evaluate:

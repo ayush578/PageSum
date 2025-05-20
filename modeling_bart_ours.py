@@ -2132,9 +2132,10 @@ class PageSumModel(BartPretrainedModel):
         lm_logits = lm_logits.transpose(1, 2)  # [bz, seq_len, seq_num, dim]
         batch_size, seq_len, seq_num, dim = lm_logits.size()
         lm_logits = lm_logits.reshape(-1, seq_num, dim) # [bz x seq_len, seq_num, dim]
-        if self.num_layers > 0:
-            s = self.att(lm_logits)
-            s = self.lin(s) # [bz x seq_len, seq_num, 1]
+        if self.seq_num > 0:
+            # s = self.att(lm_logits)
+            # s = self.lin(s) # [bz x seq_len, seq_num, 1]
+            s = self.lin(lm_logits)
         else:
             s = self.lin(lm_logits)
         s = torch.softmax(s, dim=1)
