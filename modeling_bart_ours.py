@@ -122,7 +122,36 @@ class BartLearnedPositionalEmbedding(nn.Embedding):
             past_key_values_length, past_key_values_length + seq_len, dtype=torch.long, device=self.weight.device
         )
         return super().forward(positions + self.offset)
+    
+class BartLearnedPagePositionalEmbedding(nn.Embedding):
+    """
+    This module learns positional embeddings for pages (like positional encodings for tokens),
+    assuming inputs are shaped as (batch_size * num_pages, seq_len).
+    """
 
+    def __init__(self, num_pages: int, embedding_dim: int):
+        """
+        Args:
+            num_pages: Maximum number of pages (positions).
+            embedding_dim: Dimension of the embeddings (must match token embedding dim).
+        """
+        self.offset = 0  # Optional offset if you want to reserve some indices
+        super().__init__(num_pages + self.offset, embedding_dim)
+
+    def forward(self, batch_size: int, num_pages: int, device=None):
+        """
+        Args:
+            batch_size: The batch size.
+            num_pages: Number of pages per sample in batch.
+            device: Device on which to allocate the embeddings.
+        Returns:
+            A tensor of shape (batch_size * num_pages, 1, embedding_dim), 
+            ready to be broadcast over the token sequence.
+        """
+        page_positions = torch.arange(
+            0, num_pages, dtype=torch.long, device=device or self.weight.device
+        ).unsqueeze(0).repeat(batch_size, 1).view(-1)  # Shape: (batch_size * num_pages,)
+        return super().forward(page_positions + self.offset).unsqueeze(1)  # (bs*num_pages, 1, dim)
 
 class BartAttention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
@@ -682,6 +711,7 @@ class BartEncoder(BartPretrainedModel):
             config.max_position_embeddings,
             embed_dim,
         )
+        self.embed_positions_page = BartLearnedPagePositionalEmbedding(7, embed_dim)
         self.layers = nn.ModuleList([BartEncoderLayer(config) for _ in range(config.encoder_layers)])
         self.layernorm_embedding = nn.LayerNorm(embed_dim)
 
@@ -757,8 +787,10 @@ class BartEncoder(BartPretrainedModel):
         input_ids = input_ids.to("cuda:1")
         inputs_embeds = inputs_embeds.to("cuda:1")
         embed_pos = self.embed_positions(input_shape)
+        embed_pos_page = self.embed_positions_page(batch_size=input_shape[0]//7, num_pages=7)
 
         hidden_states = inputs_embeds + embed_pos
+        hidden_states = hidden_states + embed_pos_page
         hidden_states = self.layernorm_embedding(hidden_states)
         hidden_states = F.dropout(hidden_states, p=self.dropout, training=self.training)
 

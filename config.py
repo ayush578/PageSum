@@ -1,3 +1,28 @@
+def base_setting(args):
+    args.batch_size = getattr(args, 'batch_size', 3)  # batch size
+    args.epoch = getattr(args, 'epoch', 100)  # epoch
+    args.report_freq = getattr(args, "report_freq", 100)  # report frequency
+    args.accumulate_step = getattr(args, "accumulate_step", 6)  # accumulate step
+    args.model_type = getattr(args, "model_type", "facebook/bart-large-cnn")  # model type
+    args.warmup_steps = getattr(args, "warmup_steps", 10000)  # warmup steps
+    args.grad_norm = getattr(args, "grad_norm", 0)  # gradient norm
+    args.seed = getattr(args, "seed", 970903)  # random seed
+    args.pretrained = getattr(args, "pretrained", None)  # pretrained model
+    args.max_lr = getattr(args, "max_lr", 2e-3)  # max learning rate
+    args.datatype = getattr(args, "datatype", "base")  # data type
+    args.dataset = getattr(args, "dataset", "govreport")  # dataset
+    args.smooth = getattr(args, "smooth", 0.1)  # label smoothing
+    args.length_penalty = getattr(args, "length_penalty", 2.0)  # length penalty
+    args.do_generate = getattr(args, "do_generate", False)  # do generate
+    args.page_max_len = getattr(args, "page_max_len", 1024)  # max length for one page
+    args.tgt_max_len = getattr(args, "tgt_max_len", 1024)  # max length for target
+    args.gen_max_len = getattr(args, "gen_max_len", 900)  # max length for generate
+    args.gen_min_len = getattr(args, "gen_min_len", 500)  # min length for generate
+    args.num_pages = getattr(args, "num_pages", 7)  # number of pages
+    args.optim = getattr(args, "optim", "adam")  # optimizer
+    args.page_type = getattr(args, "page_type", None)  # cluster type, (None or 'multi_doc')
+    args.gradient_checkpointing = getattr(args, "gradient_checkpointing", True)  # gradient checkpointing
+
 def arxiv(args):
     args.batch_size = getattr(args, 'batch_size', 1)  # batch size
     args.epoch = getattr(args, 'epoch', 10)  # epoch
