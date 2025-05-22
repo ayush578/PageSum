@@ -209,7 +209,7 @@ def run(args):
     # val_set = PageSumDataset(f"/scratch/aayush.cse20.itbhu/mtp/PageSum/{args.dataset}/val", args.model_type, is_test=True, page_max_len=args.page_max_len, tgt_max_len=args.tgt_max_len, num_pages=args.num_pages, page_type=args.page_type)
     # val_dataloader = DataLoader(val_set, batch_size=4, shuffle=False, num_workers=0, collate_fn=collate_fn_val)
     collate_fn = partial(collate_mp, pad_token_id=tok.pad_token_id, is_test=True)
-    train_set = PageSumDataset(f"/scratch/aayush.cse20.itbhu/mtp/PageSum/{args.dataset}/train", args.model_type, is_test=True, page_max_len=args.page_max_len, tgt_max_len=args.tgt_max_len, num_pages=args.num_pages, page_type=args.page_type)
+    train_set = PageSumDataset(f"/scratch/pushpa.rs.cse23.itbhu/mtp_ayush/PageSum/arxiv/base/train", args.model_type, is_test=True, page_max_len=args.page_max_len, tgt_max_len=args.tgt_max_len, num_pages=args.num_pages, page_type=args.page_type)
     train_subset = Subset(train_set, subset_indices)
     dataloader = DataLoader(train_subset, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=collate_fn)
     
@@ -252,7 +252,7 @@ def run(args):
             if i>args.end:
                 break
             if args.cuda:
-                batch.to("cuda:0")
+                to_cuda(batch, 0)
             step_cnt += 1
             raw_src = batch["src_input_ids"]
             input_ids = raw_src.view(raw_src.size(0), -1)
