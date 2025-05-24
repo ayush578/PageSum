@@ -218,6 +218,8 @@ class BartAttention(nn.Module):
             value_states = torch.cat([past_key_value[1], value_states], dim=2)
         else:
             # self_attention
+            # print("hidden_states", hidden_states.shape)
+            # print("key_states", self.k_proj(hidden_states).shape)
             key_states = self._shape(self.k_proj(hidden_states), -1, bsz)
             value_states = self._shape(self.v_proj(hidden_states), -1, bsz)
 
@@ -790,7 +792,7 @@ class BartEncoder(BartPretrainedModel):
         embed_pos_page = self.embed_positions_page(batch_size=input_shape[0]//7, num_pages=7)
 
         hidden_states = inputs_embeds + embed_pos
-        hidden_states = hidden_states + embed_pos_page
+        # hidden_states = hidden_states + embed_pos_page
         hidden_states = self.layernorm_embedding(hidden_states)
         hidden_states = F.dropout(hidden_states, p=self.dropout, training=self.training)
 

@@ -16,7 +16,6 @@ import torch.multiprocessing as mp
 from functools import partial
 import logging
 import nltk
-nltk.download('punkt')
 from nltk import sent_tokenize
 from modeling_bart_ours import PageSumModel
 from transformers import Adafactor
@@ -247,10 +246,10 @@ def run(args):
         s_optimizer.zero_grad()
         step_cnt = 0
         for (i, batch) in enumerate(dataloader):
-            if i<=args.start:
-                continue
-            if i>args.end:
-                break
+            # if i<=args.start:
+            #     continue
+            # if i>args.end:
+            #     break
             if args.cuda:
                 to_cuda(batch, 0)
             step_cnt += 1
@@ -334,7 +333,7 @@ def run(args):
             del loss, output
 
             if (i%args.cycle==0):
-                print("input: ",i)
+                print("input: ",i+args.start)
                 print("Current Time:", datetime.now().strftime("%H:%M:%S"),flush=True)
                 if args.save_dir :
                     torch.save(scorer.state_dict(), f"./{args.save_dir}/model.pth")
