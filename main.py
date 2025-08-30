@@ -145,6 +145,7 @@ def evaluation(args):
                     seq_num=args.num_pages,
                 )
                 dec = [tok.decode(g, skip_special_tokens=True, clean_up_tokenization_spaces=False) for g in summaries]
+                dec = [d.replace("\xa0", " ") for d in dec]
                 for (sample, d) in zip(batch["data"], dec):
                     sents = sent_tokenize(d)
                     score = rouge_score.score("\n".join(sample["abstract"]), "\n".join(sents))
@@ -222,6 +223,7 @@ def test(dataloader, scorer, args, gpuid, tok):
                         seq_num=args.num_pages
                     )
                 dec = [tok.decode(g, skip_special_tokens=True, clean_up_tokenization_spaces=False) for g in summaries]
+                dec = [d.replace("\xa0", " ") for d in dec]
                 for (sample, d) in zip(batch["data"], dec):
                     sents = sent_tokenize(d)
                     score = rouge_score.score("\n".join(sample["abstract"]), "\n".join(sents))
@@ -289,6 +291,7 @@ def test_sample(input_ids, input_mask, scorer, tok, batch):
         seq_num=args.num_pages
     )
     dec = [tok.decode(g, skip_special_tokens=True, clean_up_tokenization_spaces=False) for g in summaries]
+    dec = [d.replace("\xa0", " ") for d in dec]
     for (sample, d) in zip(batch["data"], dec):
         sents = sent_tokenize(d)
         score = rouge_score.score("\n".join(sample["abstract"]), "\n".join(sents))
